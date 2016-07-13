@@ -1746,7 +1746,87 @@ _pe_ctl( hwd_context_t *ctx, int code, _papi_int_option_t *option )
 static int
 _pe_init_control_state( hwd_control_state_t *ctl )
 {
-	pe_control_t *pe_ctl = ( pe_control_t *) ctl;
+  pe_control_t *pe_ctl = ( pe_control_t *) ctl;
+
+  /* clear the contents */
+  memset( pe_ctl, 0, sizeof ( pe_control_t ) );
+
+  /* Set the domain */
+  _pe_set_domain( ctl, _perf_event_vector.cmp_info.default_domain );    
+
+  /* default granularity */
+  pe_ctl->granularity= _perf_event_vector.cmp_info.default_granularity;
+
+  /* overflow signal */
+  pe_ctl->overflow_signal=_perf_event_vector.cmp_info.hardware_intr_sig;
+
+  pe_ctl->cidx=our_cidx;
+
+  /* Set cpu number in the control block to show events */
+  /* are not tied to specific cpu                       */
+  pe_ctl->cpu = -1;
+  return PAPI_OK;
+}
+
+/* Check the mmap page for rdpmc support */
+static int _pe_detect_rdpmc(int default_domain) {
+
+  struct perf_event_attr pe;
+  int fd,rdpmc_exists=1;
+  void *addr;
+  struct perf_event_mmap_page *our_mmap;
+
+  /* Create a fake instructions event so we can read a mmap page */
+  memset(&pe,0,sizeof(struct perf_event_attr));
+
+  pe.type=PERF_TYPE_HARDWARE;
+  pe.size=sizeof(struct perf_event_attr);
+  pe.config=PERF_COUNT_HW_INSTRUCTIONS;
+
+  /* There should probably be a helper function to handle this      */
+  /* we break on some ARM because there is no support for excluding */
+  /* kernel.                                                        */
+  if (default_domain & PAPI_DOM_KERNEL ) {
+  }
+  else {
+    pe.exclude_kernel=1;
+  }
+  fd=sys_perf_event_open(&pe,0,-1,-1,0);
+  if (fd<0) {
+    /* Do not return an error here, because on some system we may not have PERF_TYPE_HARDWARE events but
+       everything else may work! */
+    return 0;
+  }
+
+  /* create the mmap page */
+  addr=mmap(NULL, 4096, PROT_READ, MAP_SHARED,fd,0);
+  if (addr == (void *)(-1)) {
+    close(fd);
+    return 0;
+  }
+
+  /* get the rdpmc info */
+  our_mmap=(struct perf_event_mmap_page *)addr;
+  if (our_mmap->cap_usr_rdpmc==0) {
+    rdpmc_exists=0;
+  }
+
+  /* close the fake event */
+  munmap(addr,4096);
+  close(fd);
+
+  return rdpmc_exists;
+
+}
+
+
+/* Initialize the perf_event component */
+static int
+_pe_init_component( int cidx )
+{
+
+  int retval;
+  int paranoid_level;
 
 	/* clear the contents */
 	memset( pe_ctl, 0, sizeof ( pe_control_t ) );
@@ -1766,9 +1846,54 @@ _pe_init_control_state( hwd_control_state_t *ctl )
 	/* are not tied to specific cpu                       */
 	pe_ctl->cpu = -1;
 
-	return PAPI_OK;
-}
+  /* Setup mmtimers, if appropriate */
+  retval=mmtimer_setup();
+  if (retval) {
+    strncpy(_papi_hwd[cidx]->cmp_info.disabled_reason,
+	    "Error initializing mmtimer",PAPI_MAX_STR_LEN);
+    return retval;
+  }
 
+   /* Set the overflow signal */
+   _papi_hwd[cidx]->cmp_info.hardware_intr_sig = SIGRTMIN + 2;
+
+   /* Run Vendor-specific fixups */
+   pe_vendor_fixups(_papi_hwd[cidx]);
+
+   /* Detect if we can use rdpmc (or equivalent) */
+   /* We currently do not use rdpmc as it is slower in tests */
+   /* than regular read (as of Linux 3.5)                    */
+   retval=_pe_detect_rdpmc(_papi_hwd[cidx]->cmp_info.default_domain);
+   /* Never returns < 0 because we want perf_events to still be available
+      for non hardware events even if our test open of instructions fails. */
+   /* if (retval < 0 ) {
+      strncpy(_papi_hwd[cidx]->cmp_info.disabled_reason,
+	    "sys_perf_event_open() failed, perf_event support for this platform may be broken",PAPI_MAX_STR_LEN);
+
+       return retval;
+       } */
+   _papi_hwd[cidx]->cmp_info.fast_counter_read = retval;
+
+   /* Run the libpfm4-specific setup */
+   retval = _papi_libpfm4_init(_papi_hwd[cidx]);
+   if (retval) {
+     strncpy(_papi_hwd[cidx]->cmp_info.disabled_reason,
+	     "Error initializing libpfm4",PAPI_MAX_STR_LEN);
+     return retval;
+   }
+
+   retval = _pe_libpfm4_init(_papi_hwd[cidx], cidx,
+			       &perf_native_event_table,
+                               PMU_TYPE_CORE | PMU_TYPE_OS);
+   if (retval) {
+     strncpy(_papi_hwd[cidx]->cmp_info.disabled_reason,
+	     "Error initializing libpfm4",PAPI_MAX_STR_LEN);
+     return retval;
+   }
+
+   return PAPI_OK;
+
+}
 
 /****************** EVENT NAME HANDLING CODE *****************/
 
