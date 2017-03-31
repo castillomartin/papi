@@ -1809,7 +1809,7 @@ static int _pe_detect_rdpmc(int default_domain) {
   if (addr == MAP_FAILED) {
     SUBDBG("FAILED mmap trying to detect rdpmc support");
     close(fd);
-    return PAPI_ESYS;
+    return 0;
   }
 
   /* get the rdpmc info */
