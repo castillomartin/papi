@@ -65,8 +65,14 @@ papi_vector_t _perf_event_vector;
 /* Globals */
 struct native_event_table_t perf_native_event_table;
 static int our_cidx;
-static int fast_counter_read=0;
-static int exclude_guest_unsupported=0;
+
+/* PLEASE STOP INTRODUCING GLOBAL VARIABLES. 
+ * THEY BREAK TOOLS AND APPS THAT USE PAPI 
+ * VIA FORK OR DLOPEN! CERTAINLY DON'T USE STATIC
+   INITIALIZERS */
+
+static int fast_counter_read;
+static int exclude_guest_unsupported;
 
 /* The kernel developers say to never use a refresh value of 0        */
 /* See https://lkml.org/lkml/2011/5/24/172                            */
@@ -267,6 +273,8 @@ check_exclude_guest( void )
 	int ev_fd;
 	struct perf_event_attr attr;
 
+	exclude_guest_unsupported=0;
+
 	/* First check that we can open a plain instructions event */
 	memset(&attr, 0 , sizeof(attr));
 	attr.config = PERF_COUNT_HW_INSTRUCTIONS;
@@ -292,7 +300,6 @@ check_exclude_guest( void )
 			PAPIERROR("Unexpected errno in exclude_guest test");
 		}
 	} else {
-		exclude_guest_unsupported=0;
 		close(ev_fd);
 	}
 
@@ -1775,6 +1782,7 @@ static int _pe_detect_rdpmc(int default_domain) {
   int fd,rdpmc_exists=1;
   void *addr;
   struct perf_event_mmap_page *our_mmap;
+  int page_size=getpagesize();
 
   /* Create a fake instructions event so we can read a mmap page */
   memset(&pe,0,sizeof(struct perf_event_attr));
@@ -1782,41 +1790,48 @@ static int _pe_detect_rdpmc(int default_domain) {
   pe.type=PERF_TYPE_HARDWARE;
   pe.size=sizeof(struct perf_event_attr);
   pe.config=PERF_COUNT_HW_INSTRUCTIONS;
+  pe.disabled=1;
 
   /* There should probably be a helper function to handle this      */
   /* we break on some ARM because there is no support for excluding */
   /* kernel.                                                        */
-  if (default_domain & PAPI_DOM_KERNEL ) {
-  }
-  else {
+  if (!(default_domain & PAPI_DOM_KERNEL)) {
     pe.exclude_kernel=1;
   }
+  perf_event_dump_attr(&pe,0,-1,-1,0);
   fd=sys_perf_event_open(&pe,0,-1,-1,0);
   if (fd<0) {
-    /* Do not return an error here, because on some system we may not have PERF_TYPE_HARDWARE events but
-       everything else may work! */
-    return 0;
+    SUBDBG("FAILED perf_event_open trying to detect rdpmc support");    return PAPI_ESYS;
   }
 
   /* create the mmap page */
-  addr=mmap(NULL, 4096, PROT_READ, MAP_SHARED,fd,0);
-  if (addr == (void *)(-1)) {
+  addr=mmap(NULL, page_size, PROT_READ, MAP_SHARED,fd,0);
+  if (addr == MAP_FAILED) {
+    SUBDBG("FAILED mmap trying to detect rdpmc support");
     close(fd);
-    return 0;
+    return PAPI_ESYS;
   }
 
   /* get the rdpmc info */
   our_mmap=(struct perf_event_mmap_page *)addr;
-  if (our_mmap->cap_usr_rdpmc==0) {
+  if (our_mmap->cap_usr_rdpmc!=0) {
+    rdpmc_exists=1;
+  } else if ((!our_mmap->cap_bit0_is_deprecated) && 
+	     (our_mmap->cap_bit0)) {
+    /* 3.4 to 3.11 had somewhat broken rdpmc support */
+    /* This convoluted test is the "official" way to detect this */
+    /* To make things easier we don't support these kernels */
+    rdpmc_exists=0;
+  }
+  else {
     rdpmc_exists=0;
   }
 
   /* close the fake event */
-  munmap(addr,4096);
+  munmap(addr,page_size);
   close(fd);
 
   return rdpmc_exists;
-
 }
 
 
@@ -1827,24 +1842,66 @@ _pe_init_component( int cidx )
 
   int retval;
   int paranoid_level;
+  FILE *fff;
 
-	/* clear the contents */
-	memset( pe_ctl, 0, sizeof ( pe_control_t ) );
+  our_cidx = cidx;
 
-	/* Set the domain */
-	_pe_set_domain( ctl, _perf_event_vector.cmp_info.default_domain );
+	/* TODO: put paranoid code in separate function? */
 
-	/* default granularity */
-	pe_ctl->granularity= _perf_event_vector.cmp_info.default_granularity;
+	/* The is the official way to detect if perf_event support exists */
+	/* The file is called perf_counter_paranoid on 2.6.31             */
+	/* currently we are lazy and do not support 2.6.31 kernels        */
+	fff=fopen("/proc/sys/kernel/perf_event_paranoid","r");
+	if (fff==NULL) {
+		strncpy(_papi_hwd[cidx]->cmp_info.disabled_reason,
+			"perf_event support not detected",PAPI_MAX_STR_LEN);
+		return PAPI_ENOCMP;
+	}
 
-	/* overflow signal */
-	pe_ctl->overflow_signal=_perf_event_vector.cmp_info.hardware_intr_sig;
+	/* 3 (vendor patch) means completely disabled */
+	/* 2 means no kernel measurements allowed   */
+	/* 1 means normal counter access            */
+	/* 0 means you can access CPU-specific data */
+	/* -1 means no restrictions                 */
+	retval=fscanf(fff,"%d",&paranoid_level);
+	if (retval!=1) fprintf(stderr,"Error reading paranoid level\n");
+	fclose(fff);
 
-	pe_ctl->cidx=our_cidx;
+	if (paranoid_level==3) {
+		strncpy(_papi_hwd[cidx]->cmp_info.disabled_reason,
+			"perf_event support disabled by Linux with paranoid=3",PAPI_MAX_STR_LEN);
+		return PAPI_ENOCMP;
+	}
 
-	/* Set cpu number in the control block to show events */
-	/* are not tied to specific cpu                       */
-	pe_ctl->cpu = -1;
+	if ((paranoid_level==2) && (getuid()!=0)) {
+		SUBDBG("/proc/sys/kernel/perf_event_paranoid prohibits kernel counts");
+		_papi_hwd[cidx]->cmp_info.available_domains &=~PAPI_DOM_KERNEL;
+	}
+
+	/* Detect NMI watchdog which can steal counters */
+	if (_linux_detect_nmi_watchdog()) {
+		SUBDBG("The Linux nmi_watchdog is using one of the performance "
+			"counters, reducing the total number available.\n");
+	}
+
+	/* Kernel multiplexing is broken prior to kernel 2.6.34 */
+	/* The fix was probably git commit:                     */
+	/*     45e16a6834b6af098702e5ea6c9a40de42ff77d8         */
+	if (_papi_os_info.os_version < LINUX_VERSION(2,6,34)) {
+		_papi_hwd[cidx]->cmp_info.kernel_multiplex = 0;
+		_papi_hwd[cidx]->cmp_info.num_mpx_cntrs = PAPI_MAX_SW_MPX_EVENTS;
+	}
+	else {
+		_papi_hwd[cidx]->cmp_info.kernel_multiplex = 1;
+		_papi_hwd[cidx]->cmp_info.num_mpx_cntrs = PERF_EVENT_MAX_MPX_COUNTERS;
+	}
+
+	/* Check that processor is supported */
+	if (processor_supported(_papi_hwi_system_info.hw_info.vendor,
+			_papi_hwi_system_info.hw_info.cpuid_family)!=PAPI_OK) {
+		fprintf(stderr,"warning, your processor is unsupported\n");
+		/* should not return error, as software events should still work */
+	}
 
   /* Setup mmtimers, if appropriate */
   retval=mmtimer_setup();
@@ -1863,18 +1920,29 @@ _pe_init_component( int cidx )
    /* Detect if we can use rdpmc (or equivalent) */
    /* We currently do not use rdpmc as it is slower in tests */
    /* than regular read (as of Linux 3.5)                    */
-   retval=_pe_detect_rdpmc(_papi_hwd[cidx]->cmp_info.default_domain);
-   /* Never returns < 0 because we want perf_events to still be available
-      for non hardware events even if our test open of instructions fails. */
-   /* if (retval < 0 ) {
-      strncpy(_papi_hwd[cidx]->cmp_info.disabled_reason,
-	    "sys_perf_event_open() failed, perf_event support for this platform may be broken",PAPI_MAX_STR_LEN);
+   /* Don't actually fail here, as could be a surivable bug? */
+   /* If perf_event_open/mmap truly are failing we will      */
+   /* likely catch it pretty quickly elsewhere.              */
+#if (USE_PERFEVENT_RDPMC==1)
+   if (_pe_detect_rdpmc(_papi_hwd[cidx]->cmp_info.default_domain) > 0)
+     _papi_hwd[cidx]->cmp_info.fast_counter_read = 1;
+   else
+     _papi_hwd[cidx]->cmp_info.fast_counter_read = 0;
+#else
+   _papi_hwd[cidx]->cmp_info.fast_counter_read = 0;
+#endif
+   fast_counter_read = _papi_hwd[cidx]->cmp_info.fast_counter_read;
+     
+   /* check for exclude_guest issue */
+   check_exclude_guest();
+   
+   /* Update the default function pointers */
+   /* Based on features/bugs               */
+   if (bug_sync_read()) {
+     _papi_hwd[cidx]->read = _pe_read_bug_sync;
+   }
 
-       return retval;
-       } */
-   _papi_hwd[cidx]->cmp_info.fast_counter_read = retval;
-
-   /* Run the libpfm4-specific setup */
+  /* Run the libpfm4-specific setup */
    retval = _papi_libpfm4_init(_papi_hwd[cidx]);
    if (retval) {
      strncpy(_papi_hwd[cidx]->cmp_info.disabled_reason,
@@ -2357,208 +2425,6 @@ _pe_shutdown_component( void ) {
 
   return PAPI_OK;
 }
-
-
-/* Check the mmap page for rdpmc support */
-static int _pe_detect_rdpmc(void) {
-
-	struct perf_event_attr pe;
-	int fd,rdpmc_exists=1;
-	void *addr;
-	struct perf_event_mmap_page *our_mmap;
-	int page_size=getpagesize();
-
-#if defined(__i386__) || defined (__x86_64__)
-#else
-	/* We only support rdpmc on x86 for now */
-        return 0;
-#endif
-
-	/* Create a fake instructions event so we can read a mmap page */
-	memset(&pe,0,sizeof(struct perf_event_attr));
-
-	pe.type=PERF_TYPE_HARDWARE;
-	pe.size=sizeof(struct perf_event_attr);
-	pe.config=PERF_COUNT_HW_INSTRUCTIONS;
-	pe.exclude_kernel=1;
-	pe.disabled=1;
-
-	perf_event_dump_attr(&pe,0,-1,-1,0);
-	fd=sys_perf_event_open(&pe,0,-1,-1,0);
-
-	/* This hopefully won't happen? */
-	/* Though there is a chance this is the first */
-	/* attempt to open a perf_event */
-	if (fd<0) {
-		SUBDBG("FAILED perf_event_open trying to detect rdpmc support");
-		return PAPI_ESYS;
-	}
-
-	/* create the mmap page */
-	addr=mmap(NULL, page_size, PROT_READ, MAP_SHARED,fd,0);
-	if (addr == MAP_FAILED) {
-		SUBDBG("FAILED mmap trying to detect rdpmc support");
-		close(fd);
-		return PAPI_ESYS;
-	}
-
-	/* get the rdpmc info from the mmap page */
-	our_mmap=(struct perf_event_mmap_page *)addr;
-
-	/* If cap_usr_rdpmc bit is set to 1, we have support! */
-	if (our_mmap->cap_usr_rdpmc!=0) {
-		rdpmc_exists=1;
-	}
-	else if ((!our_mmap->cap_bit0_is_deprecated) && (our_mmap->cap_bit0)) {
-		/* 3.4 to 3.11 had somewhat broken rdpmc support */
-		/* This convoluted test is the "official" way to detect this */
-		/* To make things easier we don't support these kernels */
-		rdpmc_exists=0;
-	}
-	else {
-		rdpmc_exists=0;
-	}
-
-	/* close the fake event */
-	munmap(addr,page_size);
-	close(fd);
-
-	return rdpmc_exists;
-
-}
-
-
-/* Initialize the perf_event component */
-static int
-_pe_init_component( int cidx )
-{
-
-	int retval;
-	int paranoid_level;
-
-	FILE *fff;
-
-	our_cidx=cidx;
-
-	/* TODO: put paranoid code in separate function? */
-
-	/* The is the official way to detect if perf_event support exists */
-	/* The file is called perf_counter_paranoid on 2.6.31             */
-	/* currently we are lazy and do not support 2.6.31 kernels        */
-	fff=fopen("/proc/sys/kernel/perf_event_paranoid","r");
-	if (fff==NULL) {
-		strncpy(_papi_hwd[cidx]->cmp_info.disabled_reason,
-			"perf_event support not detected",PAPI_MAX_STR_LEN);
-		return PAPI_ENOCMP;
-	}
-
-	/* 3 (vendor patch) means completely disabled */
-	/* 2 means no kernel measurements allowed   */
-	/* 1 means normal counter access            */
-	/* 0 means you can access CPU-specific data */
-	/* -1 means no restrictions                 */
-	retval=fscanf(fff,"%d",&paranoid_level);
-	if (retval!=1) fprintf(stderr,"Error reading paranoid level\n");
-	fclose(fff);
-
-	if (paranoid_level==3) {
-		strncpy(_papi_hwd[cidx]->cmp_info.disabled_reason,
-			"perf_event support disabled by Linux with paranoid=3",PAPI_MAX_STR_LEN);
-		return PAPI_ENOCMP;
-	}
-
-	if ((paranoid_level==2) && (getuid()!=0)) {
-		SUBDBG("/proc/sys/kernel/perf_event_paranoid prohibits kernel counts");
-		_papi_hwd[cidx]->cmp_info.available_domains &=~PAPI_DOM_KERNEL;
-	}
-
-	/* Detect NMI watchdog which can steal counters */
-	if (_linux_detect_nmi_watchdog()) {
-		SUBDBG("The Linux nmi_watchdog is using one of the performance "
-			"counters, reducing the total number available.\n");
-	}
-
-	/* Kernel multiplexing is broken prior to kernel 2.6.34 */
-	/* The fix was probably git commit:                     */
-	/*     45e16a6834b6af098702e5ea6c9a40de42ff77d8         */
-	if (_papi_os_info.os_version < LINUX_VERSION(2,6,34)) {
-		_papi_hwd[cidx]->cmp_info.kernel_multiplex = 0;
-		_papi_hwd[cidx]->cmp_info.num_mpx_cntrs = PAPI_MAX_SW_MPX_EVENTS;
-	}
-	else {
-		_papi_hwd[cidx]->cmp_info.kernel_multiplex = 1;
-		_papi_hwd[cidx]->cmp_info.num_mpx_cntrs = PERF_EVENT_MAX_MPX_COUNTERS;
-	}
-
-	/* Check that processor is supported */
-	if (processor_supported(_papi_hwi_system_info.hw_info.vendor,
-			_papi_hwi_system_info.hw_info.cpuid_family)!=PAPI_OK) {
-		fprintf(stderr,"warning, your processor is unsupported\n");
-		/* should not return error, as software events should still work */
-	}
-
-	/* Setup mmtimers, if appropriate */
-	retval=mmtimer_setup();
-	if (retval) {
-		strncpy(_papi_hwd[cidx]->cmp_info.disabled_reason,
-			"Error initializing mmtimer",PAPI_MAX_STR_LEN);
-		return retval;
-	}
-
-	/* Set the overflow signal */
-	_papi_hwd[cidx]->cmp_info.hardware_intr_sig = SIGRTMIN + 2;
-
-	/* Run Vendor-specific fixups */
-	pe_vendor_fixups(_papi_hwd[cidx]);
-
-	/* Detect if we can use rdpmc (or equivalent) */
-	retval=_pe_detect_rdpmc();
-	_papi_hwd[cidx]->cmp_info.fast_counter_read = retval;
-	if (retval < 0 ) {
-		/* Don't actually fail here, as could be a surivable bug? */
-		/* If perf_event_open/mmap truly are failing we will      */
-		/* likely catch it pretty quickly elsewhere.              */
-		_papi_hwd[cidx]->cmp_info.fast_counter_read = 0;
-	}
-
-#if (USE_PERFEVENT_RDPMC==1)
-		fast_counter_read=_papi_hwd[cidx]->cmp_info.fast_counter_read;
-#else
-		fast_counter_read=0;
-		_papi_hwd[cidx]->cmp_info.fast_counter_read = 0;
-#endif
-
-	/* Run the libpfm4-specific setup */
-	retval = _papi_libpfm4_init(_papi_hwd[cidx]);
-	if (retval) {
-		strncpy(_papi_hwd[cidx]->cmp_info.disabled_reason,
-			"Error initializing libpfm4",PAPI_MAX_STR_LEN);
-		return retval;
-	}
-
-	retval = _pe_libpfm4_init(_papi_hwd[cidx], cidx,
-				&perf_native_event_table,
-				PMU_TYPE_CORE | PMU_TYPE_OS);
-	if (retval) {
-		strncpy(_papi_hwd[cidx]->cmp_info.disabled_reason,
-			"Error initializing libpfm4",PAPI_MAX_STR_LEN);
-		return retval;
-	}
-
-	/* check for exclude_guest issue */
-	check_exclude_guest();
-
-	/* Update the default function pointers */
-	/* Based on features/bugs               */
-	if (bug_sync_read()) {
-		_papi_hwd[cidx]->read = _pe_read_bug_sync;
-	}
-
-	return PAPI_OK;
-
-}
-
-
 
 /* Our component vector */
 
