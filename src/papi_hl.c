@@ -45,6 +45,7 @@ typedef struct _HighLevelInfo
 	long long last_real_time;		/**< Previous value of real time */
 	long long last_proc_time;		/**< Previous value of processor time */
 	long long total_ins;			/**< Total instructions */
+	char *region_name;              /**< Region name */
 } HighLevelInfo;
 
 int _hl_rate_calls( float *real_time, float *proc_time, int *events, 
@@ -627,6 +628,63 @@ PAPI_start_counters( int *events, int array_len )
 	return ( retval );
 }
 
+int
+PAPI_START( const char* region )
+{
+	int i, retval;
+	HighLevelInfo *state = NULL;
+	int *events;
+	int event;
+	int array_len;
+
+	//if ( events == NULL || array_len <= 0 )
+	//	return PAPI_EINVAL;
+
+	if ( ( retval = _internal_check_state( &state ) ) != PAPI_OK )
+		return ( retval );
+
+	if ( state->running != 0 )
+		return ( PAPI_EINVAL );
+
+    //get value from env PAPI_COUNTERS
+    //char *perf_counters = "PAPI_TOT_CYC,perf::CYCLES";
+    
+	//workaround: record preset and native events
+	array_len = 2;
+	const char *perf_counter[array_len];
+	perf_counter[0] = "PAPI_FP_INS"; 
+    perf_counter[1] = "perf::CYCLES";
+
+    events = (int *) malloc(array_len * sizeof(int));
+	
+	/* load events to the new EventSet */
+	for ( i = 0; i < array_len; i++ ) {
+        retval = PAPI_event_name_to_code( perf_counter[i], &event );
+        if ( retval != PAPI_OK ) {
+            return ( retval );
+		}
+        events[i] = event;
+		retval = PAPI_add_event( state->EventSet, events[i] );
+		if ( retval == PAPI_EISRUN )
+			return ( retval );
+
+		if ( retval ) {
+			/* remove any prior events that may have been added 
+			 * and cleanup the high level information
+			 */
+			_internal_cleanup_hl_info( state );
+			PAPI_cleanup_eventset( state->EventSet );
+			return ( retval );
+		}
+	}
+	/* start the EventSet */
+	if ( ( retval = _internal_start_hl_counters( state ) ) == PAPI_OK ) {
+		state->running = HL_START;
+		state->num_evts = ( short ) array_len;
+		state->region_name = region;
+	}
+	return ( retval );
+}
 /*========================================================================*/
 /* int PAPI_read_counters(long long *values, int array_len)      */
 /*                                                                        */
@@ -830,6 +888,60 @@ PAPI_stop_counters( long long *values, int array_len )
 	}
 	APIDBG( "PAPI_stop_counters returns %d\n", retval );
 	return retval;
+}
+
+
+int
+PAPI_STOP( const char* region )
+{
+	
+	int retval;
+	HighLevelInfo *state = NULL;
+	long long *values;
+
+	if ( ( retval = _internal_check_state( &state ) ) != PAPI_OK )
+		return ( retval );
+	
+	if ( state->region_name == region ) {
+		if ( state->running == 0 )
+			return ( PAPI_ENOTRUN );
+
+		//debug
+		//printf("state->num_evts=%d\n", state->num_evts);
+		if ( state->running == HL_START ) {
+			values = (long long *) malloc(state->num_evts * sizeof(long long));
+			retval = PAPI_stop( state->EventSet, values ); 
+
+		}
+
+		// if ( state->running > HL_START ) {
+		// 	long long tmp_values[3];
+		// 	retval = PAPI_stop( state->EventSet, tmp_values );
+		//}
+		
+		if ( retval == PAPI_OK ) {
+			//write output file (only for testing)
+			int i;
+			FILE *f = fopen("papi.out", "w");
+			if (f == NULL)
+			{
+				printf("Error creating output file!\n");
+				exit(1);
+			}
+			fprintf(f, "Region: %s\n", state->region_name);
+			for ( i = 0; i < state->num_evts; i++) {
+				fprintf(f, "Value: %d\n", values[i]);
+			}
+			fclose(f);
+			_internal_cleanup_hl_info( state );
+			PAPI_cleanup_eventset( state->EventSet );
+
+		}
+		APIDBG( "PAPI_stop_counters returns %d\n", retval );
+		return retval;
+	}
+	else
+	    return ( PAPI_ENOTRUN );
 }
 
 void
