@@ -17,6 +17,7 @@
 #include "papi_internal.h"
 #include "papi_memory.h"
 #include <string.h>
+#include <stdlib.h>
 
 /* high level papi functions*/
 
@@ -45,7 +46,8 @@ typedef struct _HighLevelInfo
 	long long last_real_time;		/**< Previous value of real time */
 	long long last_proc_time;		/**< Previous value of processor time */
 	long long total_ins;			/**< Total instructions */
-	char *region_name;              /**< Region name */
+	char *region_name;				/**< Region name */
+	char **events;					/**< Array of events */
 } HighLevelInfo;
 
 int _hl_rate_calls( float *real_time, float *proc_time, int *events, 
@@ -631,14 +633,18 @@ PAPI_start_counters( int *events, int array_len )
 int
 PAPI_START( const char* region )
 {
-	int i, retval;
+	int i, event, retval;
 	HighLevelInfo *state = NULL;
-	int *events;
-	int event;
-	int array_len;
 
-	//if ( events == NULL || array_len <= 0 )
-	//	return PAPI_EINVAL;
+	char *perf_counters_from_env = NULL; //content of environment variable PAPI_EVENTS
+	const char *separator; //separator for events
+	int array_len = 1;
+    int list_len = 0; //number of counter names in string
+    const char *position = NULL; //current position in processed string
+	char *token;
+    char** perf_counters = NULL; //array of requested counter names
+	int default_events = 0;
+
 
 	if ( ( retval = _internal_check_state( &state ) ) != PAPI_OK )
 		return ( retval );
@@ -646,25 +652,61 @@ PAPI_START( const char* region )
 	if ( state->running != 0 )
 		return ( PAPI_EINVAL );
 
-    //get value from env PAPI_COUNTERS
-    //char *perf_counters = "PAPI_TOT_CYC,perf::CYCLES";
-    
-	//workaround: record preset and native events
-	array_len = 2;
-	const char *perf_counter[array_len];
-	perf_counter[0] = "PAPI_FP_INS"; 
-    perf_counter[1] = "perf::CYCLES";
+	separator=",";
 
-    events = (int *) malloc(array_len * sizeof(int));
+	//check if environment variable is set
+    if ( getenv("PAPI_EVENTS") != NULL ) {
+
+		//get value from environment variable PAPI_EVENTS
+		perf_counters_from_env = strdup( getenv("PAPI_EVENTS") );
+		
+		//check if environment variable is not empty
+		if ( strlen( perf_counters_from_env ) > 0 ) {
+			//count number of separator characters
+			position = perf_counters_from_env;
+			while ( *position ) {
+				if ( strchr( separator, *position ) ) {
+					array_len++;
+				}
+					position++;
+			}
+			//allocate memory for perf_counters array
+			perf_counters = calloc( array_len, sizeof( char* ) );
+
+			//parse list of counter names
+			token = strtok( perf_counters_from_env, separator );
+			while ( token ) {
+				if ( list_len >= array_len ){
+					//more entries as in the first run
+					return PAPI_EINVAL;
+				}
+				perf_counters[ list_len ] = token;
+				token = strtok( NULL, separator );
+				list_len++;
+			}
+		} else {
+			default_events = 1;
+		}
+	} else {
+		default_events = 1;
+	}
 	
+	if ( default_events == 1 ) {
+		//use default values (maybe read from a file that fits the current machine)
+		array_len = 2;
+		perf_counters = calloc( array_len, sizeof( char* ) );
+		perf_counters[0] = "PAPI_FP_INS";
+		perf_counters[1] = "PAPI_L2_DCM";
+	}
+
+
 	/* load events to the new EventSet */
 	for ( i = 0; i < array_len; i++ ) {
-        retval = PAPI_event_name_to_code( perf_counter[i], &event );
-        if ( retval != PAPI_OK ) {
-            return ( retval );
+		retval = PAPI_event_name_to_code( perf_counters[i], &event );
+		if ( retval != PAPI_OK ) {
+			return ( retval );
 		}
-        events[i] = event;
-		retval = PAPI_add_event( state->EventSet, events[i] );
+		retval = PAPI_add_event( state->EventSet, event );
 		if ( retval == PAPI_EISRUN )
 			return ( retval );
 
@@ -682,6 +724,10 @@ PAPI_START( const char* region )
 		state->running = HL_START;
 		state->num_evts = ( short ) array_len;
 		state->region_name = region;
+		state->events = calloc( array_len, sizeof( char* ) );
+		for ( i = 0; i < array_len; i++ ) {
+			state->events[i] = perf_counters[i];
+		}
 	}
 	return ( retval );
 }
@@ -908,8 +954,10 @@ PAPI_STOP( const char* region )
 
 		//debug
 		//printf("state->num_evts=%d\n", state->num_evts);
+		//printf("state->EventSet=%d\n", state->EventSet);
+
 		if ( state->running == HL_START ) {
-			values = (long long *) malloc(state->num_evts * sizeof(long long));
+			values = calloc(state->num_evts, sizeof(long long));
 			retval = PAPI_stop( state->EventSet, values ); 
 
 		}
@@ -930,7 +978,8 @@ PAPI_STOP( const char* region )
 			}
 			fprintf(f, "Region: %s\n", state->region_name);
 			for ( i = 0; i < state->num_evts; i++) {
-				fprintf(f, "Value: %d\n", values[i]);
+				fprintf(f, "%s: %d\n", state->events[i], values[i]);
+				//fprintf(f, "total_ins: %d\n", state->total_ins);
 			}
 			fclose(f);
 			_internal_cleanup_hl_info( state );
