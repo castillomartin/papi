@@ -639,10 +639,10 @@ PAPI_START( const char* region )
 	char *perf_counters_from_env = NULL; //content of environment variable PAPI_EVENTS
 	const char *separator; //separator for events
 	int array_len = 1;
-    int list_len = 0; //number of counter names in string
-    const char *position = NULL; //current position in processed string
+	int list_len = 0; //number of counter names in string
+	const char *position = NULL; //current position in processed string
 	char *token;
-    char** perf_counters = NULL; //array of requested counter names
+	char** perf_counters = NULL; //array of requested counter names
 	int default_events = 0;
 
 
@@ -655,7 +655,7 @@ PAPI_START( const char* region )
 	separator=",";
 
 	//check if environment variable is set
-    if ( getenv("PAPI_EVENTS") != NULL ) {
+	if ( getenv("PAPI_EVENTS") != NULL ) {
 
 		//get value from environment variable PAPI_EVENTS
 		perf_counters_from_env = strdup( getenv("PAPI_EVENTS") );
