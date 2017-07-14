@@ -48,6 +48,7 @@ typedef struct _HighLevelInfo
 	long long total_ins;			/**< Total instructions */
 	char *region_name;				/**< Region name */
 	char **events;					/**< Array of events */
+	FILE *output_file;				/**< Output file for recorded events */
 } HighLevelInfo;
 
 int _hl_rate_calls( float *real_time, float *proc_time, int *events, 
@@ -56,6 +57,7 @@ void _internal_cleanup_hl_info( HighLevelInfo * state );
 int _internal_check_state( HighLevelInfo ** state );
 int _internal_start_hl_counters( HighLevelInfo * state );
 int _internal_hl_read_cnts( long long *values, int array_len, int flag );
+int _internal_hl_output_write( long long *values, int array_len );
 
 /* CHANGE LOG:
   - ksl 10/17/03
@@ -129,6 +131,12 @@ _internal_check_state( HighLevelInfo ** outgoing )
 
 		memset( state, 0, sizeof ( HighLevelInfo ) );
 		state->EventSet = -1;
+		state->output_file = fopen("papi.out", "w");
+		if ( state->output_file == NULL )
+		{
+			printf("Error creating output file!\n");
+			exit(1);
+		}
 
 		if ( ( retval = PAPI_create_eventset( &state->EventSet ) ) != PAPI_OK )
 			return ( retval );
@@ -160,6 +168,20 @@ _internal_cleanup_hl_info( HighLevelInfo * state )
    	state->initial_proc_time = -1;
 	state->total_ins = 0;
 	return;
+}
+
+int _internal_hl_output_write( long long *values, int array_len )
+{
+	int retval, i;
+	HighLevelInfo *state = NULL;
+	if ( ( retval = _internal_check_state( &state ) ) != PAPI_OK )
+		return ( retval );
+
+	if ( state->output_file != NULL )
+		fprintf(state->output_file, "Region: %s\n", state->region_name);
+		for ( i = 0; i < array_len; i++) {
+			fprintf(state->output_file, "    %s: %d\n", state->events[i], values[i]);
+	}
 }
 
 /** @class PAPI_flips
@@ -695,8 +717,8 @@ PAPI_START( const char* region )
 		//use default values (maybe read from a file that fits the current machine)
 		array_len = 2;
 		perf_counters = calloc( array_len, sizeof( char* ) );
-		perf_counters[0] = "PAPI_FP_INS";
-		perf_counters[1] = "PAPI_L2_DCM";
+		perf_counters[0] = "PAPI_TOT_INS";
+		perf_counters[1] = "PAPI_TOT_CYC";
 	}
 
 
@@ -936,7 +958,6 @@ PAPI_stop_counters( long long *values, int array_len )
 	return retval;
 }
 
-
 int
 PAPI_STOP( const char* region )
 {
@@ -952,36 +973,15 @@ PAPI_STOP( const char* region )
 		if ( state->running == 0 )
 			return ( PAPI_ENOTRUN );
 
-		//debug
-		//printf("state->num_evts=%d\n", state->num_evts);
-		//printf("state->EventSet=%d\n", state->EventSet);
-
 		if ( state->running == HL_START ) {
 			values = calloc(state->num_evts, sizeof(long long));
 			retval = PAPI_stop( state->EventSet, values ); 
 
 		}
 
-		// if ( state->running > HL_START ) {
-		// 	long long tmp_values[3];
-		// 	retval = PAPI_stop( state->EventSet, tmp_values );
-		//}
-		
 		if ( retval == PAPI_OK ) {
-			//write output file (only for testing)
-			int i;
-			FILE *f = fopen("papi.out", "w");
-			if (f == NULL)
-			{
-				printf("Error creating output file!\n");
-				exit(1);
-			}
-			fprintf(f, "Region: %s\n", state->region_name);
-			for ( i = 0; i < state->num_evts; i++) {
-				fprintf(f, "%s: %d\n", state->events[i], values[i]);
-				//fprintf(f, "total_ins: %d\n", state->total_ins);
-			}
-			fclose(f);
+			//write output to file
+			_internal_hl_output_write( values, state->num_evts );
 			_internal_cleanup_hl_info( state );
 			PAPI_cleanup_eventset( state->EventSet );
 
@@ -1001,6 +1001,7 @@ _papi_hwi_shutdown_highlevel(  )
 	if ( PAPI_get_thr_specific( PAPI_HIGH_LEVEL_TLS, ( void * ) &state ) ==
 		 PAPI_OK ) {
 		if ( state )
+			fclose( state->output_file );
 			papi_free( state );
 	}
 }
