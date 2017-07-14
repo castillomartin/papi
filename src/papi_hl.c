@@ -58,6 +58,7 @@ int _internal_check_state( HighLevelInfo ** state );
 int _internal_start_hl_counters( HighLevelInfo * state );
 int _internal_hl_read_cnts( long long *values, int array_len, int flag );
 int _internal_hl_output_write( long long *values, int array_len );
+char * _internal_remove_spaces( char *str );
 
 /* CHANGE LOG:
   - ksl 10/17/03
@@ -182,6 +183,17 @@ int _internal_hl_output_write( long long *values, int array_len )
 		for ( i = 0; i < array_len; i++) {
 			fprintf(state->output_file, "    %s: %d\n", state->events[i], values[i]);
 	}
+}
+
+char * _internal_remove_spaces( char *str )
+{
+	char *out = str, *put = str;
+	for(; *str != '\0'; ++str) {
+		if(*str != ' ')
+			*put++ = *str;
+	}
+	*put = '\0';
+	return out;
 }
 
 /** @class PAPI_flips
@@ -702,7 +714,9 @@ PAPI_START( const char* region )
 					//more entries as in the first run
 					return PAPI_EINVAL;
 				}
-				perf_counters[ list_len ] = token;
+				perf_counters[ list_len ] = _internal_remove_spaces(token);
+				//debug
+				//printf("#%s#\n", perf_counters[ list_len ]);
 				token = strtok( NULL, separator );
 				list_len++;
 			}
