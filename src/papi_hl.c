@@ -13,11 +13,17 @@
 * @brief This file contains the 'high level' interface to PAPI.
 *  BASIC is a high level language. ;-) */
 
+#define MPI_SUPPORT
+
 #include "papi.h"
 #include "papi_internal.h"
 #include "papi_memory.h"
 #include <string.h>
 #include <stdlib.h>
+
+#ifdef MPI_SUPPORT
+#include <mpi.h>
+#endif
 
 /* high level papi functions*/
 
@@ -107,7 +113,9 @@ _internal_check_state( HighLevelInfo ** outgoing )
 {
 	int retval;
 	HighLevelInfo *state = NULL;
-
+#ifdef MPI_SUPPORT
+	int mpi_rank;
+#endif
 	/* Only allow one thread at a time in here */
 	if ( init_level == PAPI_NOT_INITED ) {
 		retval = PAPI_library_init( PAPI_VER_CURRENT );
@@ -132,12 +140,21 @@ _internal_check_state( HighLevelInfo ** outgoing )
 
 		memset( state, 0, sizeof ( HighLevelInfo ) );
 		state->EventSet = -1;
-		state->output_file = fopen("papi.out", "w");
+#ifdef MPI_SUPPORT
+		MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
+		char outputfile[24];
+		sprintf(outputfile, "papi_%d.out", mpi_rank);
+#else
+		sprintf(outputfile, "papi.out");
+#endif
+
+		state->output_file = fopen(outputfile, "w");
 		if ( state->output_file == NULL )
 		{
 			printf("Error creating output file!\n");
 			exit(1);
 		}
+
 
 		if ( ( retval = PAPI_create_eventset( &state->EventSet ) ) != PAPI_OK )
 			return ( retval );
