@@ -1112,9 +1112,10 @@ _papi_hwi_shutdown_highlevel(  )
 
 	if ( PAPI_get_thr_specific( PAPI_HIGH_LEVEL_TLS, ( void * ) &state ) ==
 		 PAPI_OK ) {
-		if ( state )
+		if ( state ) {
 			//write output to file
 			_internal_hl_write_output();
 			papi_free( state );
+		}
 	}
 }
