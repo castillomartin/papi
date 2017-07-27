@@ -13,7 +13,7 @@
 * @brief This file contains the 'high level' interface to PAPI.
 *  BASIC is a high level language. ;-) */
 
-#define MPI_SUPPORT
+//#define MPI_SUPPORT
 
 #include "papi.h"
 #include "papi_internal.h"
@@ -48,7 +48,7 @@ typedef struct performance_counters {
 //List of performance data per region
 performance_counters_t *performance_counters_list; 
 
-char **events; 						/**< Array of event names */
+char **events;						/**< Array of event names */
 int array_len;						/**< Number of events */
 
 /** \internal 
