@@ -39,6 +39,18 @@
 #define HL_READ		6
 #define HL_ACCUM	7
 
+typedef struct performance_counters {
+    char *region;						/**< Region name */
+    struct performance_counters *next;
+    long long values[];					/**< Array of values */
+} performance_counters_t;
+
+//List of performance data per region
+performance_counters_t *performance_counters_list; 
+
+char **events; 						/**< Array of event names */
+int array_len;						/**< Number of events */
+
 /** \internal 
  * This is stored per thread
  */
@@ -52,9 +64,7 @@ typedef struct _HighLevelInfo
 	long long last_real_time;		/**< Previous value of real time */
 	long long last_proc_time;		/**< Previous value of processor time */
 	long long total_ins;			/**< Total instructions */
-	char *region_name;				/**< Region name */
-	char **events;					/**< Array of events */
-	FILE *output_file;				/**< Output file for recorded events */
+	char *region;					/**< Region name */
 } HighLevelInfo;
 
 int _hl_rate_calls( float *real_time, float *proc_time, int *events, 
@@ -63,8 +73,11 @@ void _internal_cleanup_hl_info( HighLevelInfo * state );
 int _internal_check_state( HighLevelInfo ** state );
 int _internal_start_hl_counters( HighLevelInfo * state );
 int _internal_hl_read_cnts( long long *values, int array_len, int flag );
-int _internal_hl_output_write( long long *values, int array_len );
-char * _internal_remove_spaces( char *str );
+
+char *_internal_remove_spaces( char *str );
+int _internal_hl_read_events();
+int _internal_hl_add_performance_counters_to_list( const char *region, long long *values );
+int _internal_hl_write_output();
 
 /* CHANGE LOG:
   - ksl 10/17/03
@@ -113,9 +126,7 @@ _internal_check_state( HighLevelInfo ** outgoing )
 {
 	int retval;
 	HighLevelInfo *state = NULL;
-#ifdef MPI_SUPPORT
-	int mpi_rank;
-#endif
+
 	/* Only allow one thread at a time in here */
 	if ( init_level == PAPI_NOT_INITED ) {
 		retval = PAPI_library_init( PAPI_VER_CURRENT );
@@ -140,21 +151,11 @@ _internal_check_state( HighLevelInfo ** outgoing )
 
 		memset( state, 0, sizeof ( HighLevelInfo ) );
 		state->EventSet = -1;
-#ifdef MPI_SUPPORT
-		MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
-		char outputfile[24];
-		sprintf(outputfile, "papi_%d.out", mpi_rank);
-#else
-		sprintf(outputfile, "papi.out");
-#endif
 
-		state->output_file = fopen(outputfile, "w");
-		if ( state->output_file == NULL )
-		{
-			printf("Error creating output file!\n");
-			exit(1);
-		}
-
+		performance_counters_list = NULL;
+		events = NULL;
+		array_len = 0;
+		_internal_hl_read_events();
 
 		if ( ( retval = PAPI_create_eventset( &state->EventSet ) ) != PAPI_OK )
 			return ( retval );
@@ -188,21 +189,7 @@ _internal_cleanup_hl_info( HighLevelInfo * state )
 	return;
 }
 
-int _internal_hl_output_write( long long *values, int array_len )
-{
-	int retval, i;
-	HighLevelInfo *state = NULL;
-	if ( ( retval = _internal_check_state( &state ) ) != PAPI_OK )
-		return ( retval );
-
-	if ( state->output_file != NULL )
-		fprintf(state->output_file, "Region: %s\n", state->region_name);
-		for ( i = 0; i < array_len; i++) {
-			fprintf(state->output_file, "    %s: %d\n", state->events[i], values[i]);
-	}
-}
-
-char * _internal_remove_spaces( char *str )
+char *_internal_remove_spaces( char *str )
 {
 	char *out = str, *put = str;
 	for(; *str != '\0'; ++str) {
@@ -211,6 +198,158 @@ char * _internal_remove_spaces( char *str )
 	}
 	*put = '\0';
 	return out;
+}
+
+int _internal_hl_read_events()
+{
+	char *perf_counters_from_env = NULL; //content of environment variable PAPI_EVENTS
+	const char *separator; //separator for events
+	int pc_array_len = 1;
+	int pc_list_len = 0; //number of counter names in string
+	const char *position = NULL; //current position in processed string
+	char *token;
+	int default_events = 0;
+	separator=",";
+
+	//check if environment variable is set
+	if ( getenv("PAPI_EVENTS") != NULL ) {
+
+		//get value from environment variable PAPI_EVENTS
+		perf_counters_from_env = strdup( getenv("PAPI_EVENTS") );
+		
+		//check if environment variable is not empty
+		if ( strlen( perf_counters_from_env ) > 0 ) {
+			//count number of separator characters
+			position = perf_counters_from_env;
+			while ( *position ) {
+				if ( strchr( separator, *position ) ) {
+					pc_array_len++;
+				}
+					position++;
+			}
+			//allocate memory for event array
+			events = calloc( pc_array_len, sizeof( char* ) );
+
+			//parse list of counter names
+			token = strtok( perf_counters_from_env, separator );
+			while ( token ) {
+				if ( pc_list_len >= pc_array_len ){
+					//more entries as in the first run
+					return PAPI_EINVAL;
+				}
+				events[ pc_list_len ] = _internal_remove_spaces(token);
+				//debug
+				//printf("#%s#\n", perf_counters[ pc_list_len ]);
+				token = strtok( NULL, separator );
+				pc_list_len++;
+			}
+		} else {
+			default_events = 1;
+		}
+	} else {
+		default_events = 1;
+	}
+	
+	if ( default_events == 1 ) {
+		//use default values (maybe read from a file that fits the current machine)
+		pc_array_len = 2;
+		events = calloc( pc_array_len, sizeof( char* ) );
+		events[0] = "PAPI_TOT_INS";
+		events[1] = "PAPI_TOT_CYC";
+	}
+
+	array_len = pc_array_len;
+	return ( PAPI_OK );
+}
+
+int _internal_hl_add_performance_counters_to_list( const char *region, long long *values )
+{
+	int i;
+	int found;
+	performance_counters_t *current = performance_counters_list;
+
+	//check if region is already stored in list (if so add new values)
+	found = 0;
+	while (current != NULL) {
+		if ( strcmp(current->region, region) == 0 ) {
+			for (i=0;i<array_len;i++)
+				current->values[i] += values[i];
+			found = 1;
+			break;
+			}
+		current = current->next;
+	}
+
+	//if region is not in list create new node
+	if ( found == 0 ) {
+		performance_counters_t *new_node;
+		new_node = malloc(sizeof(performance_counters_t) + array_len * sizeof(long long));
+		new_node->region = (char *)malloc((strlen(region) + 1) * sizeof(char));
+		strcpy(new_node->region,region);
+		for (i=0;i<array_len;i++)
+			new_node->values[i] = values[i];
+		new_node->next = performance_counters_list;
+		performance_counters_list = new_node;
+	}
+
+	return ( PAPI_OK );
+}
+
+int _internal_hl_write_output()
+{
+	int i;
+	FILE *output_file;
+
+#ifdef MPI_SUPPORT
+	int mpi_rank;
+	MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
+	if ( mpi_rank == 0 ) {
+
+		//TODO: collect data from all processes
+		//for now: dump only data from master process
+
+		output_file = fopen("papi.out", "w");
+		if ( output_file == NULL )
+		{
+			printf("Error creating output file!\n");
+			return ( PAPI_EINVAL);
+		} else
+		{
+			fprintf(output_file, "MPI Rank %d:\n", mpi_rank);
+			//iterate over performance counter list
+			performance_counters_t *current = performance_counters_list;
+			while (current != NULL) {
+				fprintf(output_file, "    Region: %s\n", current->region);
+				for (i=0;i<array_len;i++)
+					fprintf(output_file, "        %s: %lld\n", events[i], current->values[i]);
+				current = current->next;
+			}
+
+			fclose(output_file);
+		}
+		return ( PAPI_OK );
+	}
+#endif
+
+	output_file = fopen("papi.out", "w");
+	if ( output_file == NULL )
+	{
+		printf("Error creating output file!\n");
+		return ( PAPI_EINVAL);
+	} else
+	{
+		//iterate over performance counter list
+		performance_counters_t *current = performance_counters_list;
+		while (current != NULL) {
+			fprintf(output_file, "Region: %s\n", current->region);
+			for (i=0;i<array_len;i++)
+				fprintf(output_file, "    %s: %lld\n", events[i], current->values[i]);
+			current = current->next;
+		}
+
+		fclose(output_file);
+	}
+	return ( PAPI_OK );
 }
 
 /** @class PAPI_flips
@@ -687,75 +826,18 @@ PAPI_START( const char* region )
 	int i, event, retval;
 	HighLevelInfo *state = NULL;
 
-	char *perf_counters_from_env = NULL; //content of environment variable PAPI_EVENTS
-	const char *separator; //separator for events
-	int array_len = 1;
-	int list_len = 0; //number of counter names in string
-	const char *position = NULL; //current position in processed string
-	char *token;
-	char** perf_counters = NULL; //array of requested counter names
-	int default_events = 0;
-
-
 	if ( ( retval = _internal_check_state( &state ) ) != PAPI_OK )
 		return ( retval );
 
 	if ( state->running != 0 )
 		return ( PAPI_EINVAL );
 
-	separator=",";
-
-	//check if environment variable is set
-	if ( getenv("PAPI_EVENTS") != NULL ) {
-
-		//get value from environment variable PAPI_EVENTS
-		perf_counters_from_env = strdup( getenv("PAPI_EVENTS") );
-		
-		//check if environment variable is not empty
-		if ( strlen( perf_counters_from_env ) > 0 ) {
-			//count number of separator characters
-			position = perf_counters_from_env;
-			while ( *position ) {
-				if ( strchr( separator, *position ) ) {
-					array_len++;
-				}
-					position++;
-			}
-			//allocate memory for perf_counters array
-			perf_counters = calloc( array_len, sizeof( char* ) );
-
-			//parse list of counter names
-			token = strtok( perf_counters_from_env, separator );
-			while ( token ) {
-				if ( list_len >= array_len ){
-					//more entries as in the first run
-					return PAPI_EINVAL;
-				}
-				perf_counters[ list_len ] = _internal_remove_spaces(token);
-				//debug
-				//printf("#%s#\n", perf_counters[ list_len ]);
-				token = strtok( NULL, separator );
-				list_len++;
-			}
-		} else {
-			default_events = 1;
-		}
-	} else {
-		default_events = 1;
-	}
-	
-	if ( default_events == 1 ) {
-		//use default values (maybe read from a file that fits the current machine)
-		array_len = 2;
-		perf_counters = calloc( array_len, sizeof( char* ) );
-		perf_counters[0] = "PAPI_TOT_INS";
-		perf_counters[1] = "PAPI_TOT_CYC";
-	}
-
+	if ( events == NULL || array_len == 0 )
+		return ( PAPI_EINVAL );
 
 	/* load events to the new EventSet */
 	for ( i = 0; i < array_len; i++ ) {
-		retval = PAPI_event_name_to_code( perf_counters[i], &event );
+		retval = PAPI_event_name_to_code( events[i], &event );
 		if ( retval != PAPI_OK ) {
 			return ( retval );
 		}
@@ -776,11 +858,9 @@ PAPI_START( const char* region )
 	if ( ( retval = _internal_start_hl_counters( state ) ) == PAPI_OK ) {
 		state->running = HL_START;
 		state->num_evts = ( short ) array_len;
-		state->region_name = region;
-		state->events = calloc( array_len, sizeof( char* ) );
-		for ( i = 0; i < array_len; i++ ) {
-			state->events[i] = perf_counters[i];
-		}
+
+		state->region = (char *)malloc((strlen(region) + 1) * sizeof(char));
+		strcpy(state->region,region);
 	}
 	return ( retval );
 }
@@ -999,21 +1079,22 @@ PAPI_STOP( const char* region )
 
 	if ( ( retval = _internal_check_state( &state ) ) != PAPI_OK )
 		return ( retval );
-	
-	if ( state->region_name == region ) {
+
+	if ( strcmp(state->region,region) == 0 ) {
 		if ( state->running == 0 )
 			return ( PAPI_ENOTRUN );
 
 		if ( state->running == HL_START ) {
 			values = calloc(state->num_evts, sizeof(long long));
 			retval = PAPI_stop( state->EventSet, values ); 
-
 		}
 
 		if ( retval == PAPI_OK ) {
-			//write output to file
-			_internal_hl_output_write( values, state->num_evts );
 			_internal_cleanup_hl_info( state );
+
+			//save values in performance counters list
+			_internal_hl_add_performance_counters_to_list(region, values);
+
 			PAPI_cleanup_eventset( state->EventSet );
 
 		}
@@ -1032,7 +1113,8 @@ _papi_hwi_shutdown_highlevel(  )
 	if ( PAPI_get_thr_specific( PAPI_HIGH_LEVEL_TLS, ( void * ) &state ) ==
 		 PAPI_OK ) {
 		if ( state )
-			fclose( state->output_file );
+			//write output to file
+			_internal_hl_write_output();
 			papi_free( state );
 	}
 }
