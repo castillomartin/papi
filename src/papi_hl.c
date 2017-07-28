@@ -50,6 +50,7 @@ performance_counters_t *performance_counters_list;
 
 char **events;						/**< Array of event names */
 int array_len;						/**< Number of events */
+int generate_output;
 
 /** \internal 
  * This is stored per thread
@@ -77,7 +78,7 @@ int _internal_hl_read_cnts( long long *values, int array_len, int flag );
 char *_internal_remove_spaces( char *str );
 int _internal_hl_read_events();
 int _internal_hl_add_performance_counters_to_list( const char *region, long long *values );
-int _internal_hl_write_output();
+void _internal_hl_write_output();
 
 /* CHANGE LOG:
   - ksl 10/17/03
@@ -155,7 +156,10 @@ _internal_check_state( HighLevelInfo ** outgoing )
 		performance_counters_list = NULL;
 		events = NULL;
 		array_len = 0;
+		generate_output = 0;
 		_internal_hl_read_events();
+		//register the termination function for output
+		atexit(_internal_hl_write_output);
 
 		if ( ( retval = PAPI_create_eventset( &state->EventSet ) ) != PAPI_OK )
 			return ( retval );
@@ -295,61 +299,63 @@ int _internal_hl_add_performance_counters_to_list( const char *region, long long
 	return ( PAPI_OK );
 }
 
-int _internal_hl_write_output()
+void _internal_hl_write_output()
 {
-	int i;
-	FILE *output_file;
+	if ( generate_output == 1 ) {
+		int i;
+		FILE *output_file;
 
 #ifdef MPI_SUPPORT
-	int mpi_rank;
-	MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
-	if ( mpi_rank == 0 ) {
+		int mpi_rank;
+		MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
+		if ( mpi_rank == 0 ) {
 
-		//TODO: collect data from all processes
-		//for now: dump only data from master process
+			//TODO: collect data from all processes
+			//for now: dump only data from master process
+
+			output_file = fopen("papi.out", "w");
+			if ( output_file == NULL )
+			{
+				printf("Error creating output file!\n");
+				//return ( PAPI_EINVAL);
+			} else
+			{
+				fprintf(output_file, "MPI Rank %d:\n", mpi_rank);
+				//iterate over performance counter list
+				performance_counters_t *current = performance_counters_list;
+				while (current != NULL) {
+					fprintf(output_file, "    Region: %s\n", current->region);
+					for (i=0;i<array_len;i++)
+						fprintf(output_file, "        %s: %lld\n", events[i], current->values[i]);
+					current = current->next;
+				}
+
+				fclose(output_file);
+			}
+			//return ( PAPI_OK );
+		}
+#endif
 
 		output_file = fopen("papi.out", "w");
 		if ( output_file == NULL )
 		{
 			printf("Error creating output file!\n");
-			return ( PAPI_EINVAL);
+			//return ( PAPI_EINVAL);
 		} else
 		{
-			fprintf(output_file, "MPI Rank %d:\n", mpi_rank);
 			//iterate over performance counter list
 			performance_counters_t *current = performance_counters_list;
 			while (current != NULL) {
-				fprintf(output_file, "    Region: %s\n", current->region);
+				fprintf(output_file, "Region: %s\n", current->region);
 				for (i=0;i<array_len;i++)
-					fprintf(output_file, "        %s: %lld\n", events[i], current->values[i]);
+					fprintf(output_file, "    %s: %lld\n", events[i], current->values[i]);
 				current = current->next;
 			}
 
 			fclose(output_file);
 		}
-		return ( PAPI_OK );
+		//return ( PAPI_OK );
 	}
-#endif
-
-	output_file = fopen("papi.out", "w");
-	if ( output_file == NULL )
-	{
-		printf("Error creating output file!\n");
-		return ( PAPI_EINVAL);
-	} else
-	{
-		//iterate over performance counter list
-		performance_counters_t *current = performance_counters_list;
-		while (current != NULL) {
-			fprintf(output_file, "Region: %s\n", current->region);
-			for (i=0;i<array_len;i++)
-				fprintf(output_file, "    %s: %lld\n", events[i], current->values[i]);
-			current = current->next;
-		}
-
-		fclose(output_file);
-	}
-	return ( PAPI_OK );
 }
 
 /** @class PAPI_flips
@@ -1094,6 +1100,7 @@ PAPI_STOP( const char* region )
 
 			//save values in performance counters list
 			_internal_hl_add_performance_counters_to_list(region, values);
+			generate_output = 1;
 
 			PAPI_cleanup_eventset( state->EventSet );
 
@@ -1112,10 +1119,7 @@ _papi_hwi_shutdown_highlevel(  )
 
 	if ( PAPI_get_thr_specific( PAPI_HIGH_LEVEL_TLS, ( void * ) &state ) ==
 		 PAPI_OK ) {
-		if ( state ) {
-			//write output to file
-			_internal_hl_write_output();
+		if ( state )
 			papi_free( state );
-		}
 	}
 }
