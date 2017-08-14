@@ -350,7 +350,7 @@ int _internal_hl_store_values_in_map( unsigned long tid, const char *region,
 {
 	int i;
 
-	APIDBG("_internal_hl_store_values_in_map tid=%lu, region=%s, offset=%d\n",
+	APIDBG("tid=%lu, region=%s, offset=%d\n",
 		tid, region, offset);
 	for ( i = 0; i < event_number; i++ )
 		APIDBG("value=%lld\n", values[i]);
@@ -458,7 +458,7 @@ void _internal_hl_write_output()
 
 			for ( i = 0; i < number; i++ )
 			{
-				//APIDBG("Thread %lu\n", tids[i]);
+				APIDBG("Thread %lu\n", tids[i]);
 				//find values of current thread in global map and dump in file
 				events_map_t *find_thread = malloc(sizeof(events_map_t));
 				find_thread->key = tids[i];
@@ -994,7 +994,7 @@ PAPI_region_begin( const char* region )
 
 	tid = PAPI_thread_id();
 
-	//APIDBG("PAPI_region_begin %s Thread %lu\n", region, tid);
+	APIDBG("Region %s Thread %lu\n", region, tid);
 
 	//read current hardware events
 	values = calloc(event_number, sizeof(long long));
