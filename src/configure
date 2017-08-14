@@ -6221,7 +6221,8 @@ CFLAGS="$CFLAGS $BITFLAGS"
 if test "$CC_COMMON_NAME" = "gcc"; then
 	CFLAGS="$CFLAGS -Wall"
 fi
-FFLAGS="$CFLAGS $BITFLAGS $FFLAGS -Dlinux"
+FFLAGS="$CFLAGS $BITFLAGS $FFLAGS -Dlinuxi"
+LDFLAGS="$LDFLAGS -pthread"
 
 # OS Support
 
