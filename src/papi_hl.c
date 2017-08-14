@@ -23,6 +23,7 @@
 
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <error.h>
 
 
 /* high level papi functions*/
@@ -72,8 +73,14 @@ int _internal_hl_map_compar(const void *l, const void *r)
 	return lm->key - lr->key;
 }
 
+//thread local
+__thread int _EventSet = PAPI_NULL;
+
 //root of events map
-void *root = 0;
+static void *root = 0;
+
+//rank of the process
+static int rank = -1;
 
 /** \internal 
  * This is stored per thread
@@ -96,10 +103,13 @@ void _internal_cleanup_hl_info( HighLevelInfo * state );
 int _internal_check_state( HighLevelInfo ** state );
 int _internal_start_hl_counters( HighLevelInfo * state );
 int _internal_hl_read_cnts( long long *values, int array_len, int flag );
+void _internal_onetime_library_init(void);
 
+void _internal_determine_rank();
 char *_internal_remove_spaces( char *str );
 int _internal_hl_read_events();
-int _internal_hl_store_values_in_map( const char *region, long long *values, short offset);
+int _internal_hl_store_values_in_map( unsigned long tid, const char *region,
+									long long *values, short offset);
 void _internal_hl_write_output();
 
 /* CHANGE LOG:
@@ -139,6 +149,41 @@ void _internal_hl_write_output();
    -- PAPI_accum() replaced with PAPI_start() / PAPI_stop pair for same reason.
 */
 
+void _internal_onetime_library_init(void)
+{
+	static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+	static int done = 0;
+	int retval;
+
+	/*  failure means already we've already initialized or attempted! */
+	if (pthread_mutex_trylock(&mutex) == 0) {
+	APIDBG("Initializing...\n");
+	if ((retval = PAPI_library_init(PAPI_VER_CURRENT)) != PAPI_VER_CURRENT)
+		error_at_line(0, retval, __FILE__ ,__LINE__, "PAPI_library_init"); 
+	if ((retval = PAPI_multiplex_init()) != PAPI_OK)
+		error_at_line(0, retval, __FILE__ ,__LINE__, "PAPI_multiplex_init"); 
+	if ((retval = PAPI_thread_init(&pthread_self)) != PAPI_OK)
+		error_at_line(0, retval, __FILE__ ,__LINE__, "PAPI_thread_init"); 
+	if ((retval = PAPI_set_debug(PAPI_VERB_ECONT)) != PAPI_OK)
+		error_at_line(0, retval, __FILE__ ,__LINE__, "PAPI_set_debug");
+	if ((retval = PAPI_register_thread()) != PAPI_OK)
+		error_at_line(0, retval, __FILE__ ,__LINE__, "PAPI_register_thread"); 
+	done++;
+	APIDBG("Done!\n");
+	} else {
+	/* Wait if done still is 0, if not just register thread */
+	while(!done) {
+		APIDBG("Waiting!\n");
+		usleep(1);
+	}
+
+	APIDBG("Done waiting!\n");
+	if ((retval = PAPI_register_thread()) != PAPI_OK)
+		error_at_line(0, retval, __FILE__ ,__LINE__, "PAPI_register_thread"); 
+	}
+}
+
+
 /** @internal 
  * This function is called to determine the state of the system.
  * We may as well set the HighLevelInfo so you don't have to look it
@@ -147,7 +192,7 @@ void _internal_hl_write_output();
 int
 _internal_check_state( HighLevelInfo ** outgoing )
 {
-	int i, event, retval;
+	int retval;
 	HighLevelInfo *state = NULL;
 
 	/* Only allow one thread at a time in here */
@@ -162,59 +207,25 @@ _internal_check_state( HighLevelInfo ** outgoing )
 		}
 	}
 
-	/* Read event names and store in global data structure */
-	if ( event_number == 0 )
-	{
-		_papi_hwi_lock( HIGHLEVEL_LOCK );
-		if ( event_number == 0 )
-		{
-			_internal_hl_read_events();
-			//register the termination function for output
-			atexit(_internal_hl_write_output);
-		}
-		_papi_hwi_unlock( HIGHLEVEL_LOCK );
-	}
-
 	/*
 	 * Do we have the thread specific data setup yet?
 	 */
 	if ( ( retval =
-		PAPI_get_thr_specific( PAPI_HIGH_LEVEL_TLS, ( void * ) &state ) )
-		!= PAPI_OK || state == NULL ) {
-
-		if ( event_names == NULL || event_number == 0 )
-			return ( PAPI_EINVAL );
-
+		   PAPI_get_thr_specific( PAPI_HIGH_LEVEL_TLS, ( void * ) &state ) )
+		 != PAPI_OK || state == NULL ) {
 		state = ( HighLevelInfo * ) papi_malloc( sizeof ( HighLevelInfo ) );
 		if ( state == NULL )
 			return ( PAPI_ENOMEM );
 
 		memset( state, 0, sizeof ( HighLevelInfo ) );
-
 		state->EventSet = -1;
 
 		if ( ( retval = PAPI_create_eventset( &state->EventSet ) ) != PAPI_OK )
 			return ( retval );
 
-		/* load events to the new EventSet */
-		for ( i = 0; i < event_number; i++ ) {
-			retval = PAPI_event_name_to_code( event_names[i], &event );
-			if ( retval != PAPI_OK ) {
-				return ( retval );
-			}
-			retval = PAPI_add_event( state->EventSet, event );
-			if ( retval == PAPI_EISRUN )
-				return ( retval );
-		}
-		state->num_evts = ( short ) event_number;
-		/* start the EventSet */
-		if ( ( retval = _internal_start_hl_counters( state ) ) == PAPI_OK ) {
-			state->running = HL_START;
-		}
-
 		if ( ( retval =
-			   PAPI_set_thr_specific( PAPI_HIGH_LEVEL_TLS,
-									  state ) ) != PAPI_OK )
+			PAPI_set_thr_specific( PAPI_HIGH_LEVEL_TLS,
+									state ) ) != PAPI_OK )
 			return ( retval );
 	}
 	*outgoing = state;
@@ -239,6 +250,26 @@ _internal_cleanup_hl_info( HighLevelInfo * state )
    	state->initial_proc_time = -1;
 	state->total_ins = 0;
 	return;
+}
+
+void _internal_determine_rank()
+{
+	//check environment variables for rank identification
+	//'OMPI_COMM_WORLD_RANK','ALPS_APP_PE','PMI_RANK',’SLURM_PROCID’
+
+	if ( getenv("OMPI_COMM_WORLD_RANK") != NULL )
+		rank = atoi(getenv("OMPI_COMM_WORLD_RANK"));
+	else if ( getenv("ALPS_APP_PE") != NULL )
+		rank = atoi(getenv("ALPS_APP_PE"));
+	else if ( getenv("PMI_RANK") != NULL )
+		rank = atoi(getenv("PMI_RANK"));
+	else if ( getenv("SLURM_PROCID") != NULL )
+		rank = atoi(getenv("SLURM_PROCID"));
+	else
+		rank = 0;
+
+	if ( rank < 0 )
+		rank = 0;
 }
 
 char *_internal_remove_spaces( char *str )
@@ -314,14 +345,19 @@ int _internal_hl_read_events()
 	return ( PAPI_OK );
 }
 
-int _internal_hl_store_values_in_map( const char *region, long long *values, short offset)
+int _internal_hl_store_values_in_map( unsigned long tid, const char *region,
+									long long *values, short offset)
 {
 	int i;
-	unsigned long thread_id = PAPI_thread_id();
+
+	APIDBG("_internal_hl_store_values_in_map tid=%lu, region=%s, offset=%d\n",
+		tid, region, offset);
+	for ( i = 0; i < event_number; i++ )
+		APIDBG("value=%lld\n", values[i]);
 
 	//check if thread is already stored in events map
 	events_map_t *find_thread = malloc(sizeof(events_map_t));
-	find_thread->key = thread_id;
+	find_thread->key = tid;
 	void *r = tfind(find_thread, &root, _internal_hl_map_compar); /* read */
 	if ( r != NULL )
 	{
@@ -363,7 +399,7 @@ int _internal_hl_store_values_in_map( const char *region, long long *values, sho
 	{
 		//create new map item for current thread id
 		events_map_t *new_thread = malloc(sizeof(events_map_t));
-		new_thread->key = thread_id;
+		new_thread->key = tid;
 		new_thread->value = NULL;
 		//create new node and save offset values
 		events_t *new_node;
@@ -393,9 +429,17 @@ void _internal_hl_write_output()
 		FILE *output_file;
 		short output_file_generated = 0;	
 
-		//TODO: determine mpi rank for output file
+		//determine rank for output file
+		_internal_determine_rank();
 
-		output_file = fopen("papi/rank_0.out", "w");
+		char output_file_path[32];
+
+		if ( rank < 0 )
+			sprintf(output_file_path, "papi/rank_0.out");
+		else
+			sprintf(output_file_path, "papi/rank_%d.out", rank);
+
+		output_file = fopen(output_file_path, "w");
 		if ( output_file == NULL )
 		{
 			printf("Error creating output file!\n");
@@ -414,12 +458,14 @@ void _internal_hl_write_output()
 
 			for ( i = 0; i < number; i++ )
 			{
+				//APIDBG("Thread %lu\n", tids[i]);
 				//find values of current thread in global map and dump in file
 				events_map_t *find_thread = malloc(sizeof(events_map_t));
 				find_thread->key = tids[i];
 				void *r = tfind(find_thread, &root, _internal_hl_map_compar); /* read */
 				if ( r != NULL ) {
-					fprintf(output_file, "Thread %lu\n", (*(events_map_t**)r)->key);
+					//fprintf(output_file, "Thread %lu\n", (*(events_map_t**)r)->key);
+					fprintf(output_file, "Thread %d\n", i);
 					//iterate over values list
 					events_t *current = (*(events_map_t**)r)->value;
 					while (current != NULL) {
@@ -906,23 +952,59 @@ PAPI_start_counters( int *events, int array_len )
 int
 PAPI_region_begin( const char* region )
 {
-	int retval;
-	HighLevelInfo *state = NULL;
+	int i, event, retval;
 	long long *values;
+	unsigned long tid;
 
-	if ( ( retval = _internal_check_state( &state ) ) != PAPI_OK )
+	_internal_onetime_library_init();
+
+	/* Read event names and store in global data structure */
+	if ( event_number == 0 )
+	{
+		_papi_hwi_lock( HIGHLEVEL_LOCK );
+		if ( event_number == 0 )
+		{
+			_internal_hl_read_events();
+			//register the termination function for output
+			atexit(_internal_hl_write_output);
+		}
+		_papi_hwi_unlock( HIGHLEVEL_LOCK );
+	}
+
+	if ( _EventSet == PAPI_NULL )
+	{
+		if ( ( retval = PAPI_create_eventset( &_EventSet ) ) != PAPI_OK )
 		return ( retval );
+	
+		/* load events to the new EventSet */
+		for ( i = 0; i < event_number; i++ ) {
+			retval = PAPI_event_name_to_code( event_names[i], &event );
+			if ( retval != PAPI_OK ) {
+				return ( retval );
+			}
+			retval = PAPI_add_event( _EventSet, event );
+			if ( retval == PAPI_EISRUN )
+				return ( retval );
+		}
 
-	if ( state->running != HL_START )
-		return ( PAPI_EINVAL );
+		if ( ( retval = PAPI_start( _EventSet ) ) != PAPI_OK ) {
+			return ( retval );
+		}
+	}
+
+	tid = PAPI_thread_id();
+
+	//APIDBG("PAPI_region_begin %s Thread %lu\n", region, tid);
 
 	//read current hardware events
-	values = calloc(state->num_evts, sizeof(long long));
-	_internal_hl_read_cnts( values, state->num_evts, HL_READ );
+	values = calloc(event_number, sizeof(long long));
+	if ( ( retval = PAPI_read( _EventSet, values ) ) != PAPI_OK ) {
+		return ( retval );
+	}
 
 	//store offset values in global map
 	_papi_hwi_lock( HIGHLEVEL_LOCK );
-	_internal_hl_store_values_in_map( region, values, 1);
+	_internal_hl_store_values_in_map( tid, region, values, 1);
 	_papi_hwi_unlock( HIGHLEVEL_LOCK );
 
 	return ( PAPI_OK );
@@ -1136,22 +1218,23 @@ int
 PAPI_region_end( const char* region )
 {
 	int retval;
-	HighLevelInfo *state = NULL;
 	long long *values;
+	unsigned long tid;
 
-	if ( ( retval = _internal_check_state( &state ) ) != PAPI_OK )
-		return ( retval );
-
-	if ( state->running != HL_START )
+	if ( _EventSet == PAPI_NULL )
 		return ( PAPI_EINVAL );
 
+	tid = PAPI_thread_id();
+
 	//read current hardware events
-	values = calloc(state->num_evts, sizeof(long long));
-	_internal_hl_read_cnts( values, state->num_evts, HL_READ );
+	values = calloc(event_number, sizeof(long long));
+	if ( ( retval = PAPI_read( _EventSet, values ) ) != PAPI_OK ) {
+		return ( retval );
+	}
 
 	//store values in global map
 	_papi_hwi_lock( HIGHLEVEL_LOCK );
-	_internal_hl_store_values_in_map( region, values, 0);
+	_internal_hl_store_values_in_map( tid, region, values, 0);
 	_papi_hwi_unlock( HIGHLEVEL_LOCK );
 
 	//first thread enables generation of output file
