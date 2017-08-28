@@ -348,7 +348,9 @@ int _internal_hl_read_events()
 int _internal_hl_store_values_in_map( unsigned long tid, const char *region,
 									long long *values, short offset)
 {
-	int i;
+   int i;
+   //offset = 1 --> region_begin
+   //offset = 0 --> regtion end
 
 	APIDBG("tid=%lu, region=%s, offset=%d\n",
 		tid, region, offset);
@@ -454,8 +456,11 @@ void _internal_hl_write_output()
 			tids=malloc( number * sizeof(unsigned long) );
 			PAPI_list_threads( tids, &number );
 
-			//TODO: sort thread ids (tids)
+			// Thread,list<Region:list<Event:Value>>
+			// 1,<"calc_1":<"PAPI_TOT_INS":57258,"PAPI_TOT_CYC":39439>,"calc_2":<"PAPI_TOT_INS":57258,"PAPI_TOT_CYC":39439>>
 
+
+			fprintf(output_file, "Thread,list<Region:list<Event:Value>>");
 			for ( i = 0; i < number; i++ )
 			{
 				APIDBG("Thread %lu\n", tids[i]);
@@ -464,18 +469,31 @@ void _internal_hl_write_output()
 				find_thread->key = tids[i];
 				void *r = tfind(find_thread, &root, _internal_hl_map_compar); /* read */
 				if ( r != NULL ) {
-					//fprintf(output_file, "Thread %lu\n", (*(events_map_t**)r)->key);
-					fprintf(output_file, "Thread %d\n", i);
+					//print thread
+					//do we really need the exact thread id?
+					//fprintf(output_file, "\n%lu,<", (*(events_map_t**)r)->key);
+					//use of iterator id
+					fprintf(output_file, "\n%d,<", i);
+
 					//iterate over values list
 					events_t *current = (*(events_map_t**)r)->value;
 					while (current != NULL) {
-						fprintf(output_file, "  Region %s\n", current->region);
+						//print region
+						fprintf(output_file, "\"%s\":<", current->region);
 						for ( j = 0; j < event_number; j++ )
-							fprintf(output_file, "    %s: %lld\n", event_names[j], current->values[j].total);
+							if ( j == ( event_number - 1 ) )
+								fprintf(output_file, "\"%s\":\"%lld\">", event_names[j], current->values[j].total);
+							else
+								fprintf(output_file, "\"%s\":\"%lld\",", event_names[j], current->values[j].total);
 						current = current->next;
+						if (current == NULL )
+							fprintf(output_file, ">");
+						else
+							fprintf(output_file, ",");
 					}
 				}
 			}
+			fprintf(output_file, "\n");
 			fclose(output_file);
 		}
 	}
