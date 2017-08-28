@@ -12,8 +12,9 @@ pipelines:
           - cd src
           - ./configure
           - make
-	  - ctests/zero
-	  - ctests/cmpinfo
-	  - ctests/hwinfo
-	  - utils/papi_avail 
-	  - utils/papi_native_avail -c --noqual -i PERF
+          - ctests/zero
+          - ctests/cmpinfo
+          - ctests/hwinfo
+          - utils/papi_avail
+          - utils/papi_native_avail -c --noqual -i PERF
+
