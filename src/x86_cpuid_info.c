@@ -16,7 +16,6 @@
 #include "papi.h"
 #include "papi_internal.h"
 
-
 static void init_mem_hierarchy( PAPI_mh_info_t * mh_info );
 static int init_amd( PAPI_mh_info_t * mh_info, int *levels );
 static short int _amd_L2_L3_assoc( unsigned short int pattern );
@@ -1603,7 +1602,6 @@ _x86_detect_hypervisor(char *vendor_name)
     memcpy(hyper_vendor_id + 8, &edx, 4);
     hyper_vendor_id[12] = '\0';
     strncpy(vendor_name,hyper_vendor_id,PAPI_MAX_STR_LEN);
-    printf("HERE!\n");
     return 1;
   } else {
     char *r = vm_cpu_sig();
@@ -1615,8 +1613,3 @@ _x86_detect_hypervisor(char *vendor_name)
   strncpy(vendor_name,"none",PAPI_MAX_STR_LEN);
   return 0;
 }
-
-
-
-
-
