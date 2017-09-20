@@ -24,6 +24,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <error.h>
+#include <time.h>
 
 
 /* high level papi functions*/
@@ -82,6 +83,9 @@ static void *root = 0;
 //rank of the process
 static int rank = -1;
 
+//measurement directory
+static char output_absolute_path[256];
+
 /** \internal 
  * This is stored per thread
  */
@@ -110,6 +114,7 @@ char *_internal_remove_spaces( char *str );
 int _internal_hl_read_events();
 int _internal_hl_store_values_in_map( unsigned long tid, const char *region,
 									long long *values, short offset);
+static void internal_mkdir(const char *dir);
 void _internal_hl_write_output();
 
 /* CHANGE LOG:
@@ -265,11 +270,6 @@ void _internal_determine_rank()
 		rank = atoi(getenv("PMI_RANK"));
 	else if ( getenv("SLURM_PROCID") != NULL )
 		rank = atoi(getenv("SLURM_PROCID"));
-	else
-		rank = 0;
-
-	if ( rank < 0 )
-		rank = 0;
 }
 
 char *_internal_remove_spaces( char *str )
@@ -422,6 +422,28 @@ int _internal_hl_store_values_in_map( unsigned long tid, const char *region,
 		return PAPI_EINVAL;
 }
 
+static void internal_mkdir(const char *dir)
+{
+	char tmp[256];
+	char *p = NULL;
+	size_t len;
+
+	snprintf(tmp, sizeof(tmp),"%s",dir);
+	len = strlen(tmp);
+	if(tmp[len - 1] == '/')
+		tmp[len - 1] = 0;
+	for(p = tmp + 1; *p; p++)
+	{
+		if(*p == '/')
+		{
+			*p = 0;
+			mkdir(tmp, S_IRWXU);
+			*p = '/';
+		}
+	}
+	mkdir(tmp, S_IRWXU);
+}
+
 void _internal_hl_write_output()
 {
 	if ( generate_output == 1 )
@@ -434,17 +456,24 @@ void _internal_hl_write_output()
 		//determine rank for output file
 		_internal_determine_rank();
 
-		char output_file_path[32];
+		char output_file_path[128];
 
 		if ( rank < 0 )
-			sprintf(output_file_path, "papi/rank_0.out");
+		{
+			//generate unique rank number
+			sprintf(output_file_path, "%s/rank_XXXXXX", output_absolute_path);
+			mkstemp(output_file_path);
+		}
 		else
-			sprintf(output_file_path, "papi/rank_%d.out", rank);
+		{
+			sprintf(output_file_path, "%s/rank_%d", output_absolute_path, rank);
+		}
 
 		output_file = fopen(output_file_path, "w");
+
 		if ( output_file == NULL )
 		{
-			printf("Error creating output file!\n");
+			printf("Error: Cannot create output file %s!\n", output_file_path);
 		}
 		else
 			output_file_generated = 1;
@@ -1262,7 +1291,23 @@ PAPI_region_end( const char* region )
 		if ( generate_output == 0 )
 			generate_output = 1;
 			//create directory for output files (+timestamp to keep it unique)
-			mkdir("papi", 0755);
+
+			//check if PAPI_OUTPUT_DIRECTORY is set
+			char *output_prefix = NULL;
+			if ( getenv("PAPI_OUTPUT_DIRECTORY") != NULL )
+				output_prefix = strdup( getenv("PAPI_OUTPUT_DIRECTORY") );
+			else
+				output_prefix = strdup( get_current_dir_name() );
+			
+			//get date and time for measurement directory
+			time_t t = time(NULL);
+			struct tm tm = *localtime(&t);
+			char m_time[128];
+			sprintf(m_time, "%d%d%dT%d%d%d", tm.tm_year+1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
+
+			//generate absolute path including measurement directory
+			sprintf(output_absolute_path, "%s/papi-%s", output_prefix, m_time);
+			internal_mkdir(output_absolute_path);
 		_papi_hwi_unlock( HIGHLEVEL_LOCK );
 	}
 
