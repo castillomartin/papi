@@ -20,14 +20,14 @@ def create_json_object(source):
   for item in file_list:
     json_rank = {}
 
-    #determine mpi rank based on file name (rank_#.out)
+    #determine mpi rank based on file name (rank_#)
     rank = item.split('_', 1)[1]
     rank = rank.rsplit('.', 1)[0]
     json_rank["id"] = int(rank)
     json_rank["threads"] = []
     
     #open meaurement file
-    file_name = str(source) + "/rank_" + str(rank) + ".out" 
+    file_name = str(source) + "/rank_" + str(rank) 
     try:
       rank_file = open(file_name, "r")
       #skip first line
