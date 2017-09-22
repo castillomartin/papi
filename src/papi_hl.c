@@ -26,6 +26,7 @@
 #include <error.h>
 #include <time.h>
 
+//#define APIDBG printf
 
 /* high level papi functions*/
 
@@ -116,7 +117,7 @@ void _internal_determine_rank();
 char *_internal_remove_spaces( char *str );
 int _internal_hl_read_events();
 int _internal_hl_store_values_in_map( unsigned long tid, const char *region,
-									long long *values, short offset);
+									long long *values, long long cycles, short offset);
 static void internal_mkdir(const char *dir);
 void _internal_hl_write_output();
 
@@ -295,12 +296,13 @@ int _internal_hl_read_events()
 	int pc_list_len = 0; //number of counter names in string
 	const char *position = NULL; //current position in processed string
 	char *token;
-	int default_number = 2; // number of default PAPI counters
+	int default_number = 3; // number of default PAPI counters
 	char *default_events[default_number];
 	int i;
 
-	default_events[0] = "PAPI_TOT_INS";
-	default_events[1] = "PAPI_FP_OPS";
+	default_events[0] = "perf::TASK-CLOCK";
+	default_events[1] = "PAPI_TOT_INS";
+	default_events[2] = "PAPI_FP_OPS";
 
 	//check if environment variable is set
 	if ( getenv("PAPI_EVENTS") != NULL ) {
@@ -366,40 +368,29 @@ int _internal_hl_read_events()
 
 	free(event_names_from_env);
 
-	//increase total event number for real time and proc time
-	total_event_number = event_number + 2;
+	//increase total event number for proc time
+	total_event_number = event_number + 1;
 
 	//generate array of all events including real time and proc time for output
 	all_event_names = calloc( total_event_number, sizeof( char* ) );
-	all_event_names[0] = "Real Time";
-	all_event_names[1] = "CPU Time";
+	all_event_names[0] = "CPU Time";
 	for ( i = 0; i < event_number; i++ )
-		all_event_names[i + 2] = event_names[i];
+		all_event_names[i + 1] = event_names[i];
 
 	return ( PAPI_OK );
 }
 
 int _internal_hl_store_values_in_map( unsigned long tid, const char *region,
-									long long *values, short offset)
+									long long *values, long long cycles, short offset )
 {
 	//offset = 1 --> region_begin
 	//offset = 0 --> region end
-
-	long long rt, pt; // current elapsed real and process times in usec
 	int i;
 
-	/* Read elapsed real and process times  */
-	rt = PAPI_get_real_usec();
-	pt = PAPI_get_virt_usec();
-	
-	/* Convert to seconds with multiplication because it is much faster */
-	//*real_time = ((float)( rt - state->initial_real_time )) * .000001;
-	//*proc_time = ((float)( pt - state->initial_proc_time )) * .000001;
-
-	APIDBG("tid=%lu, region=%s, offset=%d\n",
-		tid, region, offset);
+	APIDBG("tid=%lu, region=%s, cycles=%lld, offset=%d\n",
+		tid, region, cycles, offset);
 	for ( i = 0; i < event_number; i++ )
-		APIDBG("value=%lld\n", values[i]);
+		APIDBG("event=%s, value=%lld\n", event_names[i], values[i]);
 
 	//check if thread is already stored in events map
 	events_map_t *find_thread = malloc(sizeof(events_map_t));
@@ -414,20 +405,16 @@ int _internal_hl_store_values_in_map( unsigned long tid, const char *region,
 				for ( i = 0; i < total_event_number; i++ ) {
 					if ( offset == 1 ) {
 						if ( i == 0 )
-							current->values[i].offset = rt;
-						else if ( i == 1 )
-							current->values[i].offset = pt;
+							current->values[i].offset = cycles;
 						else 
-							current->values[i].offset = values[i - 2];
+							current->values[i].offset = values[i - 1];
 					} else {
 						//determine difference of current value and offset and add
 						//previous total value
 						if ( i == 0 )
-							current->values[i].offset += rt - current->values[i].offset;
-						else if ( i == 1 )
-							current->values[i].offset += pt - current->values[i].offset;
+							current->values[i].total += cycles - current->values[i].offset;
 						else
-							current->values[i].total += values[i - 2] - current->values[i].offset;
+							current->values[i].total += values[i - 1] - current->values[i].offset;
 					}
 				}
 				return PAPI_OK;
@@ -443,11 +430,9 @@ int _internal_hl_store_values_in_map( unsigned long tid, const char *region,
 			strcpy(new_node->region, region);
 			for ( i = 0; i < total_event_number; i++ ) {
 				if ( i == 0 )
-					new_node->values[i].offset = rt;
-				else if ( i == 1 )
-					new_node->values[i].offset = pt;
+					new_node->values[i].offset = cycles;
 				else 
-					new_node->values[i].offset = values[i - 2];
+					new_node->values[i].offset = values[i - 1];
 			}
 			new_node->next = (*(events_map_t**)r)->value;
 			(*(events_map_t**)r)->value = new_node;
@@ -469,11 +454,9 @@ int _internal_hl_store_values_in_map( unsigned long tid, const char *region,
 		strcpy(new_node->region, region);
 		for ( i = 0; i < total_event_number; i++ ) {
 			if ( i == 0 )
-				new_node->values[i].offset = rt;
-			else if ( i == 1 )
-				new_node->values[i].offset = pt;
+				new_node->values[i].offset = cycles;
 			else 
-				new_node->values[i].offset = values[i - 2];
+				new_node->values[i].offset = values[i - 1];
 		}
 		new_node->next = new_thread->value;
 		new_thread->value = new_node;
@@ -1065,6 +1048,7 @@ PAPI_region_begin( const char* region )
 {
 	int i, event, retval;
 	unsigned long tid;
+	long long cycles;
 
 	_internal_onetime_library_init();
 
@@ -1110,13 +1094,13 @@ PAPI_region_begin( const char* region )
 	APIDBG("Region %s Thread %lu\n", region, tid);
 
 	//read current hardware events
-	if ( ( retval = PAPI_read( _EventSet, _values ) ) != PAPI_OK ) {
+	if ( ( retval = PAPI_read_ts( _EventSet, _values, &cycles ) ) != PAPI_OK ) {
 		return ( retval );
 	}
 
 	//store offset values in global map
 	_papi_hwi_lock( HIGHLEVEL_LOCK );
-	_internal_hl_store_values_in_map( tid, region, _values, 1);
+	_internal_hl_store_values_in_map( tid, region, _values, cycles, 1);
 	_papi_hwi_unlock( HIGHLEVEL_LOCK );
 
 	return ( PAPI_OK );
@@ -1331,6 +1315,7 @@ PAPI_region_end( const char* region )
 {
 	int retval;
 	unsigned long tid;
+	long long cycles;
 
 	if ( _EventSet == PAPI_NULL )
 		return ( PAPI_EINVAL );
@@ -1338,13 +1323,13 @@ PAPI_region_end( const char* region )
 	tid = PAPI_thread_id();
 
 	//read current hardware events
-	if ( ( retval = PAPI_read( _EventSet, _values ) ) != PAPI_OK ) {
+	if ( ( retval = PAPI_read_ts( _EventSet, _values, &cycles ) ) != PAPI_OK ) {
 		return ( retval );
 	}
 
 	//store values in global map
 	_papi_hwi_lock( HIGHLEVEL_LOCK );
-	_internal_hl_store_values_in_map( tid, region, _values, 0);
+	_internal_hl_store_values_in_map( tid, region, _values, cycles, 0);
 	_papi_hwi_unlock( HIGHLEVEL_LOCK );
 
 	//first thread enables generation of output file
