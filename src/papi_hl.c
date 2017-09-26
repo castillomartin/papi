@@ -113,9 +113,13 @@ int _internal_start_hl_counters( HighLevelInfo * state );
 int _internal_hl_read_cnts( long long *values, int array_len, int flag );
 void _internal_onetime_library_init(void);
 
+static int _internal_checkCounter ( char* counter );
 void _internal_determine_rank();
 char *_internal_remove_spaces( char *str );
 int _internal_hl_read_events();
+void _internal_hl_add_values_to_list(events_t *node, long long *values,
+									long long cycles, short offset );
+events_t* _internal_hl_new_list_node(const char *region);
 int _internal_hl_store_values_in_map( unsigned long tid, const char *region,
 									long long *values, long long cycles, short offset);
 static void internal_mkdir(const char *dir);
@@ -261,6 +265,31 @@ _internal_cleanup_hl_info( HighLevelInfo * state )
 	return;
 }
 
+static int
+_internal_checkCounter ( char* counter )
+{
+	int EventSet = PAPI_NULL;
+	int eventcode;
+	int retval;
+
+	if ( ( retval = PAPI_create_eventset( &EventSet ) ) != PAPI_OK )
+	return ( retval );
+
+	if ( ( retval = PAPI_event_name_to_code( counter, &eventcode ) ) != PAPI_OK )
+	return ( retval );
+
+	if ( ( retval = PAPI_add_event (EventSet, eventcode) ) != PAPI_OK )
+	return ( retval );
+
+	if ( ( retval = PAPI_cleanup_eventset (EventSet) ) != PAPI_OK )
+	return ( retval );
+
+	if ( ( retval = PAPI_destroy_eventset (&EventSet) ) != PAPI_OK )
+	return ( retval );
+	
+	return ( PAPI_OK );
+}
+
 void _internal_determine_rank()
 {
 	//check environment variables for rank identification
@@ -296,13 +325,29 @@ int _internal_hl_read_events()
 	int pc_list_len = 0; //number of counter names in string
 	const char *position = NULL; //current position in processed string
 	char *token;
-	int default_number = 3; // number of default PAPI counters
-	char *default_events[default_number];
+	int default_number = 0; // number of default PAPI counters
+	char **default_events = NULL;
 	int i;
 
-	default_events[0] = "perf::TASK-CLOCK";
-	default_events[1] = "PAPI_TOT_INS";
-	default_events[2] = "PAPI_FP_OPS";
+	//check availibility of default events
+	//check for FLOPS
+	if ( _internal_checkCounter( "PAPI_FP_OPS" ) == PAPI_OK )
+	{
+		default_number = 4;
+		default_events = calloc( default_number, sizeof( char* ) );
+		default_events[0] = "perf::TASK-CLOCK";
+		default_events[1] = "PAPI_TOT_INS";
+		default_events[2] = "PAPI_TOT_CYC";
+		default_events[3] = "PAPI_FP_OPS";
+	} else
+	{
+		default_number = 3;
+		default_events = calloc( default_number, sizeof( char* ) );
+		default_events[0] = "perf::TASK-CLOCK";
+		default_events[1] = "PAPI_TOT_INS";
+		default_events[2] = "PAPI_TOT_CYC";
+		printf("PAPI: Default counter PAPI_FP_OPS not available on this machine!\n");
+	}
 
 	//check if environment variable is set
 	if ( getenv("PAPI_EVENTS") != NULL ) {
@@ -327,10 +372,21 @@ int _internal_hl_read_events()
 			//parse list of counter names
 			token = strtok( perf_counters_from_env, separator );
 			while ( token ) {
+				//skip default values
+				if ( strcmp(_internal_remove_spaces(token), "perf::TASK-CLOCK") == 0 || 
+						strcmp(_internal_remove_spaces(token), "PAPI_TOT_INS") == 0 ||
+						strcmp(_internal_remove_spaces(token), "PAPI_TOT_CYC") == 0 ||
+						strcmp(_internal_remove_spaces(token), "PAPI_FP_OPS") == 0 )
+				{
+					//printf("TOKEN: %s\n", _internal_remove_spaces(token));
+					token = strtok( NULL, separator );
+					continue;
+				}
 				if ( pc_list_len >= pc_array_len ){
 					//more entries as in the first run
 					return PAPI_EINVAL;
 				}
+				printf("TOKEN: %s\n", _internal_remove_spaces(token));
 				event_names_from_env[ pc_list_len ] = _internal_remove_spaces(token);
 				//debug
 				//printf("#%s#\n", perf_counters[ pc_list_len ]);
@@ -340,22 +396,30 @@ int _internal_hl_read_events()
 		}
 	}
 
-	//TODO:
-	//check availibility of default events
 	//check availibilty of user events
-	//remove duplicates
-	//check combinations
+	if ( pc_list_len > 0 )
+	{
+		for ( i = 0; i < pc_list_len; i++ ) {
+			if ( _internal_checkCounter( event_names_from_env[i] ) != PAPI_OK ) {
+				printf("PAPI Error: Counter %s not available on this machine!\n", event_names_from_env[i]);
+				exit(EXIT_FAILURE);
+			}
+		}
+	}
+	
 
 	//generate final event set
 	if ( event_names_from_env != NULL )
 	{
 		//combine default and user events
-		event_names = calloc( pc_array_len + default_number, sizeof( char* ) );
+		event_names = calloc( pc_list_len + default_number, sizeof( char* ) );
 		for ( i = 0; i < default_number; i++ )
 			event_names[i] = default_events[i];
-		for ( i = default_number; i < pc_array_len + default_number; i++ )
+		for ( i = default_number; i < pc_list_len + default_number; i++ )
 			event_names[i] = event_names_from_env[i - default_number];
-		event_number = pc_array_len + default_number;
+		event_number = pc_list_len + default_number;
+		//check combinations
+		//TODO!
 	}
 	else
 	{
@@ -364,20 +428,55 @@ int _internal_hl_read_events()
 		for ( i = 0; i < default_number; i++ )
 			event_names[i] = default_events[i];
 		event_number = default_number;
+		//check combinations
+		//TODO!
 	}
 
 	free(event_names_from_env);
+	free(default_events);
 
-	//increase total event number for proc time
-	total_event_number = event_number + 1;
+	//increase total event number for region counter and CPU time
+	total_event_number = event_number + 2;
 
-	//generate array of all events including real time and proc time for output
+	//generate array of all events including region count and proc time for output
 	all_event_names = calloc( total_event_number, sizeof( char* ) );
-	all_event_names[0] = "CPU Time";
+	all_event_names[0] = "Region Count";
+	all_event_names[1] = "CPU Time";
 	for ( i = 0; i < event_number; i++ )
-		all_event_names[i + 1] = event_names[i];
+		all_event_names[i + 2] = event_names[i];
 
 	return ( PAPI_OK );
+}
+
+void _internal_hl_add_values_to_list(events_t *node, long long *values,
+									long long cycles, short offset )
+{
+	int i;
+	int region_count = 1;
+
+	if ( offset == 1 ) {
+		//set first fixed counters
+		node->values[0].offset = region_count;
+		node->values[1].offset = cycles;
+		for ( i = 0; i < event_number; i++ )
+			node->values[i + 2].offset = values[i];
+	} else {
+		//determine difference of current value and offset and add
+		//previous total value
+		node->values[0].total += node->values[0].offset;
+		node->values[1].total += cycles - node->values[1].offset;
+		for ( i = 0; i < event_number; i++ )
+			node->values[i + 2].total += values[i] - node->values[i + 2].offset;
+	}
+}
+
+events_t* _internal_hl_new_list_node(const char *region )
+{
+	events_t *new_node;
+	new_node = malloc(sizeof(events_t) + total_event_number * sizeof(value_t));
+	new_node->region = (char *)malloc((strlen(region) + 1) * sizeof(char));
+	strcpy(new_node->region, region);
+	return new_node;
 }
 
 int _internal_hl_store_values_in_map( unsigned long tid, const char *region,
@@ -402,45 +501,26 @@ int _internal_hl_store_values_in_map( unsigned long tid, const char *region,
 		events_t *current = (*(events_map_t**)r)->value;
 		while (current != NULL) {
 			if ( strcmp(current->region, region) == 0 ) {
-				for ( i = 0; i < total_event_number; i++ ) {
-					if ( offset == 1 ) {
-						if ( i == 0 )
-							current->values[i].offset = cycles;
-						else 
-							current->values[i].offset = values[i - 1];
-					} else {
-						//determine difference of current value and offset and add
-						//previous total value
-						if ( i == 0 )
-							current->values[i].total += cycles - current->values[i].offset;
-						else
-							current->values[i].total += values[i - 1] - current->values[i].offset;
-					}
-				}
+				//if region already exists, add values to current node
+				_internal_hl_add_values_to_list(current, values, cycles, offset);
 				return PAPI_OK;
-				}
+			}
 			current = current->next;
 		}
 		//create new node for current region (only if offset is set) and store offset
 		if ( offset == 1 )
 		{
-			events_t *new_node;
-			new_node = malloc(sizeof(events_t) + total_event_number * sizeof(value_t));
-			new_node->region = (char *)malloc((strlen(region) + 1) * sizeof(char));
-			strcpy(new_node->region, region);
-			for ( i = 0; i < total_event_number; i++ ) {
-				if ( i == 0 )
-					new_node->values[i].offset = cycles;
-				else 
-					new_node->values[i].offset = values[i - 1];
-			}
+			//create new node
+			events_t *new_node = _internal_hl_new_list_node(region);
+			//add values to new node
+			_internal_hl_add_values_to_list(new_node, values, cycles, offset);
 			new_node->next = (*(events_map_t**)r)->value;
 			(*(events_map_t**)r)->value = new_node;
 				return PAPI_OK;
 		}
 	}
 		
-	//if current thread id is not stored map, we only get offset values from PAPI_region_begin
+	//if current thread id is not stored in map, we only get offset values
 	if ( offset == 1 )
 	{
 		//create new map item for current thread id
@@ -448,16 +528,9 @@ int _internal_hl_store_values_in_map( unsigned long tid, const char *region,
 		new_thread->key = tid;
 		new_thread->value = NULL;
 		//create new node and save offset values
-		events_t *new_node;
-		new_node = malloc(sizeof(events_t) + total_event_number * sizeof(value_t));
-		new_node->region = (char *)malloc((strlen(region) + 1) * sizeof(char));
-		strcpy(new_node->region, region);
-		for ( i = 0; i < total_event_number; i++ ) {
-			if ( i == 0 )
-				new_node->values[i].offset = cycles;
-			else 
-				new_node->values[i].offset = values[i - 1];
-		}
+		events_t *new_node = _internal_hl_new_list_node(region);
+		//add values to new node
+		_internal_hl_add_values_to_list(new_node, values, cycles, offset);
 		new_node->next = new_thread->value;
 		new_thread->value = new_node;
 		//add new item to map
