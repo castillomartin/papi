@@ -1167,11 +1167,11 @@ PAPI_FCALL( papif_unlock, PAPIF_unlock,
  *
  * @see PAPI_start_counters
  */
-PAPI_FCALL( papif_start_counters, PAPIF_START_COUNTERS,
-			( int *events, int *array_len, int *check ) )
-{
-	*check = PAPI_start_counters( events, *array_len );
-}
+// PAPI_FCALL( papif_start_counters, PAPIF_START_COUNTERS,
+// 			( int *events, int *array_len, int *check ) )
+// {
+// 	*check = PAPI_start_counters( events, *array_len );
+// }
 
 /** @class PAPI_read_counters
  *	@ingroup PAPIF
@@ -1183,11 +1183,11 @@ PAPI_FCALL( papif_start_counters, PAPIF_START_COUNTERS,
  *
  * @see PAPI_read_counters
  */
-PAPI_FCALL( papif_read_counters, PAPIF_READ_COUNTERS,
-			( long long *values, int *array_len, int *check ) )
-{
-	*check = PAPI_read_counters( values, *array_len );
-}
+// PAPI_FCALL( papif_read_counters, PAPIF_READ_COUNTERS,
+// 			( long long *values, int *array_len, int *check ) )
+// {
+// 	*check = PAPI_read_counters( values, *array_len );
+// }
 
 /** @class PAPIF_stop_counters
  *	@ingroup PAPIF
@@ -1199,11 +1199,11 @@ PAPI_FCALL( papif_read_counters, PAPIF_READ_COUNTERS,
  *
  * @see PAPI_stop_counters
  */
-PAPI_FCALL( papif_stop_counters, PAPIF_STOP_COUNTERS,
-			( long long *values, int *array_len, int *check ) )
-{
-	*check = PAPI_stop_counters( values, *array_len );
-}
+// PAPI_FCALL( papif_stop_counters, PAPIF_STOP_COUNTERS,
+// 			( long long *values, int *array_len, int *check ) )
+// {
+// 	*check = PAPI_stop_counters( values, *array_len );
+// }
 
 /** @class PAPIF_accum_counters
  *	@ingroup PAPIF
@@ -1215,11 +1215,11 @@ PAPI_FCALL( papif_stop_counters, PAPIF_STOP_COUNTERS,
  *
  * @see PAPI_accum_counters
  */
-PAPI_FCALL( papif_accum_counters, PAPIF_ACCUM_COUNTERS,
-			( long long *values, int *array_len, int *check ) )
-{
-	*check = PAPI_accum_counters( values, *array_len );
-}
+// PAPI_FCALL( papif_accum_counters, PAPIF_ACCUM_COUNTERS,
+// 			( long long *values, int *array_len, int *check ) )
+// {
+// 	*check = PAPI_accum_counters( values, *array_len );
+// }
 
 /** @class PAPIF_num_counters
  *	@ingroup PAPIF
@@ -1231,10 +1231,10 @@ PAPI_FCALL( papif_accum_counters, PAPIF_ACCUM_COUNTERS,
  *
  * @see PAPI_num_counters
  */
-PAPI_FCALL( papif_num_counters, PAPIF_NUM_COUNTERS, ( int *numevents ) )
-{
-	*numevents = PAPI_num_counters(  );
-}
+// PAPI_FCALL( papif_num_counters, PAPIF_NUM_COUNTERS, ( int *numevents ) )
+// {
+// 	*numevents = PAPI_num_counters(  );
+// }
 
 /** @class PAPIF_ipc
  *	@ingroup PAPIF
@@ -1246,12 +1246,12 @@ PAPI_FCALL( papif_num_counters, PAPIF_NUM_COUNTERS, ( int *numevents ) )
  *
  * @see PAPI_ipc
  */
-PAPI_FCALL( papif_ipc, PAPIF_IPC,
-			( float *rtime, float *ptime, long long *ins, float *ipc,
-			  int *check ) )
-{
-	*check = PAPI_ipc( rtime, ptime, ins, ipc );
-}
+// PAPI_FCALL( papif_ipc, PAPIF_IPC,
+// 			( float *rtime, float *ptime, long long *ins, float *ipc,
+// 			  int *check ) )
+// {
+// 	*check = PAPI_ipc( rtime, ptime, ins, ipc );
+// }
 
 /** @class PAPIF_epc
  *	@ingroup PAPIF
@@ -1263,13 +1263,13 @@ PAPI_FCALL( papif_ipc, PAPIF_IPC,
  *
  * @see PAPI_epc
  */
-PAPI_FCALL( papif_epc, PAPIF_EPC,
-			( int event, float *rtime, float *ptime, 
-			  long long *ref, long long *core, long long *evt, float *epc,
-			  int *check) )
-{
-	*check = PAPI_epc( event, rtime, ptime, ref, core, evt, epc );
-}
+// PAPI_FCALL( papif_epc, PAPIF_EPC,
+// 			( int event, float *rtime, float *ptime, 
+// 			  long long *ref, long long *core, long long *evt, float *epc,
+// 			  int *check) )
+// {
+// 	*check = PAPI_epc( event, rtime, ptime, ref, core, evt, epc );
+// }
 
 /** @class PAPIF_flips
  *	@ingroup PAPIF
@@ -1281,12 +1281,12 @@ PAPI_FCALL( papif_epc, PAPIF_EPC,
  *
  * @see PAPI_flips
  */
-PAPI_FCALL( papif_flips, PAPIF_FLIPS,
-			( float *real_time, float *proc_time, long long *flpins,
-			  float *mflips, int *check ) )
-{
-	*check = PAPI_flips( real_time, proc_time, flpins, mflips );
-}
+// PAPI_FCALL( papif_flips, PAPIF_FLIPS,
+// 			( float *real_time, float *proc_time, long long *flpins,
+// 			  float *mflips, int *check ) )
+// {
+// 	*check = PAPI_flips( real_time, proc_time, flpins, mflips );
+// }
 
 /** @class PAPIF_flops
  *	@ingroup PAPIF
@@ -1298,12 +1298,12 @@ PAPI_FCALL( papif_flips, PAPIF_FLIPS,
  *
  * @see PAPI_flops
  */
-PAPI_FCALL( papif_flops, PAPIF_FLOPS,
-			( float *real_time, float *proc_time, long long *flpops,
-			  float *mflops, int *check ) )
-{
-	*check = PAPI_flops( real_time, proc_time, flpops, mflops );
-}
+// PAPI_FCALL( papif_flops, PAPIF_FLOPS,
+// 			( float *real_time, float *proc_time, long long *flpops,
+// 			  float *mflops, int *check ) )
+// {
+// 	*check = PAPI_flops( real_time, proc_time, flpops, mflops );
+// }
 
 
 /* Fortran only APIs for get_opt and set_opt functionality */

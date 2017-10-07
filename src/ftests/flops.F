@@ -42,10 +42,10 @@ C Initialize the Matrix arrays
       end do
 
 C Setup PAPI library and begin collecting data from the counters
-      call PAPIf_flips( real_time, proc_time, flpins, mflops, retval )
-      if ( retval.NE.PAPI_OK) then
-        call ftest_fail(__FILE__, __LINE__, 'PAPIf_flips', retval)
-      end if
+C      call PAPIf_flips( real_time, proc_time, flpins, mflops, retval )
+C      if ( retval.NE.PAPI_OK) then
+C        call ftest_fail(__FILE__, __LINE__, 'PAPIf_flips', retval)
+C      end if
 
 C Matrix-Matrix Multiply
       do i=1,index
@@ -57,10 +57,10 @@ C Matrix-Matrix Multiply
       end do
 
 C Collect the data into the Variables passed in
-      call PAPIf_flips( real_time, proc_time, flpins, mflops, retval)
-      if ( retval.NE.PAPI_OK) then
-        call ftest_fail(__FILE__, __LINE__, 'PAPIf_flips', retval)
-      end if
+C      call PAPIf_flips( real_time, proc_time, flpins, mflops, retval)
+C      if ( retval.NE.PAPI_OK) then
+C        call ftest_fail(__FILE__, __LINE__, 'PAPIf_flips', retval)
+C      end if
       if (tests_quiet .EQ. 0) then
       print *, 'Real_time: ', real_time
       print *, ' Proc_time: ', proc_time
