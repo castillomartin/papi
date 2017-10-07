@@ -444,8 +444,7 @@ void _internal_hl_write_output()
    if ( generate_output == 0 )
    {
       _papi_hwi_lock( HIGHLEVEL_LOCK );
-      if ( generate_output == 0 )
-         generate_output = 1;
+      if ( generate_output == 0 ) {
          //create directory for output files (+timestamp to keep it unique)
 
          //check if PAPI_OUTPUT_DIRECTORY is set
@@ -465,6 +464,8 @@ void _internal_hl_write_output()
          //sprintf(output_absolute_path, "%s/papi-%s", output_prefix, m_time);
          sprintf(output_absolute_path, "%s/papi", output_prefix);
          internal_mkdir(output_absolute_path);
+         generate_output = 1;
+      }
       _papi_hwi_unlock( HIGHLEVEL_LOCK );
    }
 
