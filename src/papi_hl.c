@@ -476,13 +476,13 @@ void _internal_hl_write_output()
       FILE *output_file;
       short output_file_generated = 0;
       //current CPU frequency in Hz
-      long long cpu_freq;
+      int cpu_freq;
 
       //determine rank for output file
       _internal_determine_rank();
 
-      //TODO: determine current cpu frequency
-      cpu_freq = 1995057000;
+      //determine current cpu frequency
+      cpu_freq = PAPI_get_opt( PAPI_CLOCKRATE, NULL );
 
       char output_file_path[128];
 
@@ -517,7 +517,7 @@ void _internal_hl_write_output()
          // 1,<"calc_1":<"PAPI_TOT_INS":57258,"PAPI_TOT_CYC":39439>,"calc_2":<"PAPI_TOT_INS":57258,"PAPI_TOT_CYC":39439>>
 
          //print current CPU frequency for each rank
-         fprintf(output_file, "CPU in Hz:%lld\n", cpu_freq);
+         fprintf(output_file, "CPU in MHz:%d\n", cpu_freq);
          fprintf(output_file, "Thread,list<Region:list<Event:Value>>");
          for ( i = 0; i < number; i++ )
          {

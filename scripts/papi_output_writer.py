@@ -12,6 +12,7 @@ try:
 except NameError:
   to_unicode = str
 
+cpu_freq = 0
 
 def create_json_object(source):
   json_object = {}
@@ -32,14 +33,27 @@ def create_json_object(source):
     file_name = str(source) + "/rank_" + str(rank) 
     try:
       rank_file = open(file_name, "r")
-      #skip first two lines
-      lines = rank_file.readlines()[2:]
+      lines = rank_file.readlines() #[2:]
     except IOError as ioe:
       print("Cannot open file {} ({})".format(file_name, repr(ioe)))
       return
     
+    line_counter = 0
+
     #read lines from file
     for line in lines:
+      if line_counter == 0:
+        #determine cpu frequency
+        global cpu_freq
+        cpu_freq = int(line.split(':', 1)[1]) * 1000000
+        #print cpu_freq
+        line_counter = line_counter + 1
+        continue
+      if line_counter == 1:
+        #skip second line
+        line_counter = line_counter + 1
+        continue
+
       thread_id = line.split(',', 1)[0]
 
       #remove thread_id from line
@@ -79,6 +93,60 @@ def create_json_object(source):
 
   return json_object
 
+class Sum_Counters(object):
+  regions = OrderedDict()
+  regions_last_rank_id = {}
+
+  def add_region(self, rank_id, region, events=OrderedDict()):
+    if region not in self.regions:
+      #new region
+      new_region_events = events.copy()
+      new_region_events['Number of ranks'] = 1
+      new_region_events['Number of threads'] = 1
+      new_region_events['Number of processes'] = 1
+      self.regions[region] = new_region_events.copy()
+      self.regions_last_rank_id[region] = rank_id
+    else:
+      #add counter values to existing region
+      known_events = self.regions[region].copy()
+      new_events = events.copy()
+
+      #increase number of ranks when rank_id has changed
+      if self.regions_last_rank_id[region] == rank_id:
+        new_events['Number of ranks'] = 0
+      else:
+        self.regions_last_rank_id[region] = rank_id
+        new_events['Number of ranks'] = 1
+
+      #always increase number of threads
+      new_events['Number of threads'] = 1
+      new_events['Number of processes'] = 1
+
+      #add values
+      for event_key,event_value in known_events.iteritems():
+        if 'Number of' in event_key or 'count' in event_key:
+          known_events[event_key] = event_value + new_events[event_key]
+        else:
+          known_events[event_key] = float(format(event_value + new_events[event_key], '.2f'))
+      self.regions[region] = known_events.copy()
+
+  def get_json(self):
+    #calculate correct thread number (number of processes / number of ranks)
+    for name in self.regions:
+      events = self.regions[name]
+      events['Number of threads'] = int(events['Number of processes'] / events['Number of ranks'])
+    return self.regions
+
+
+def sum_json_object(json):
+  sum_cnt = Sum_Counters()
+  for ranks in json['ranks']:
+    for threads in ranks['threads']:
+      for regions in threads['regions']:
+        sum_cnt.add_region(ranks['id'], regions['name'], regions['events'])
+  return sum_cnt.get_json()
+
+
 def format_events(events):
   #keep order as declared
   format_events = OrderedDict()
@@ -91,7 +159,7 @@ def format_events(events):
   #Real Time
   if 'CYCLES' in events:
     #TODO: read cpu frequency from json file
-    rt = float(events['CYCLES']) / 1995057000
+    rt = float(events['CYCLES']) / int(cpu_freq)
     format_events['Real time in s'] = float(format(rt, '.2f'))
     del events['CYCLES']
   #CPU Time
@@ -113,9 +181,11 @@ def format_events(events):
   
   #read the rest
   for event_key,event_value in events.iteritems():
-    format_events[event_key] = event_value
+    value = float(event_value)
+    format_events[event_key] = float(format(value, '.2f'))
 
   return format_events
+
 
 def format_json_object(json):
   json_object = {}
@@ -149,8 +219,8 @@ def format_json_object(json):
     
   return json_object
 
-def write_json_file(data):
-  with io.open('papi.json', 'w', encoding='utf8') as outfile:
+def write_json_file(data, file_name):
+  with io.open(file_name, 'w', encoding='utf8') as outfile:
     str_ = json.dumps(data,
                       indent=4, sort_keys=False,
                       separators=(',', ': '), ensure_ascii=False)
@@ -161,7 +231,11 @@ def main(source, format):
   if (format == "json"):
     json = create_json_object(source)
     formated_json = format_json_object(json)
-    write_json_file(formated_json)
+    write_json_file(formated_json, 'papi.json')
+
+    #summarize data over threads and ranks
+    sum_json = sum_json_object(formated_json)
+    write_json_file(sum_json, 'papi_sum.json')
   else:
     print("Format not supported!")
 
