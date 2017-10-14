@@ -36,7 +36,7 @@
  */
 char **event_names = NULL;       /**< Array of event names for PAPI*/
 char **all_event_names = NULL;   /**< Array of all event names*/
-char default_events[4][32];      /**< Maximal number of default events*/
+char default_events[3][32];      /**< Maximal number of default events*/
 int event_number = 0;            /**< Number of events provided by PAPI specified by user + defaults*/
 int total_event_number = 0;      /**< total events including specific metrics like real and proc time*/
 int generate_output = 0;         /**< Generate output file if value=1 */
@@ -197,30 +197,30 @@ int _internal_hl_read_events()
    //check if default counters is disabled
    if ( getenv("PAPI_DEFAULT_NONE") != NULL ) {
       default_option = strdup( getenv("PAPI_DEFAULT_NONE") );
-      printf("PAPI_DEFAULT_NONE=%s\n", default_option);
-      no_default = 1;
+      const char *possible_default_options = "YES,yes,true,TRUE,1";
+      if ( strstr(possible_default_options, default_option) != NULL )
+         no_default = 1;
+      else
+         no_default = 0; 
    }
 
-   //we need at least one counter
-   strcpy(default_events[0], "perf::TASK-CLOCK");
-   default_number = 1;
-
+   //set default counters
    if ( no_default == 0 )
    {
-      strcpy(default_events[1], "PAPI_TOT_INS");
-      strcpy(default_events[2], "PAPI_TOT_CYC");
-      default_number = 3;
+      strcpy(default_events[0], "PAPI_TOT_INS");
+      strcpy(default_events[1], "PAPI_TOT_CYC");
+      default_number = 2;
 
       //check for FLOPS
       if ( _internal_checkCounter( "PAPI_FP_OPS" ) == PAPI_OK )
       {
-         strcpy(default_events[3], "PAPI_FP_OPS");
-         default_number = 4;
+         strcpy(default_events[2], "PAPI_FP_OPS");
+         default_number = 3;
       } else
          printf("PAPI: Default counter PAPI_FP_OPS not available on this machine!\n");
    }
 
-   //check if environment variable is set
+   //check if user wants to add additional counters
    if ( getenv("PAPI_EVENTS") != NULL ) {
 
       separator=",";
@@ -243,35 +243,34 @@ int _internal_hl_read_events()
          //parse list of counter names
          token = strtok( perf_counters_from_env, separator );
          while ( token ) {
-            //skip default values
-            if ( strcmp(_internal_remove_spaces(token), "perf::TASK-CLOCK") == 0 )
+
+            //check if user declared default counters (if so, skip them)
+            if ( no_default == 0 ) 
             {
-               token = strtok( NULL, separator );
-               continue;
-            }
-            if ( ( no_default == 0 ) && 
-                  ( strcmp(_internal_remove_spaces(token), "PAPI_TOT_INS") == 0 ||
-                     strcmp(_internal_remove_spaces(token), "PAPI_TOT_CYC") == 0 ||
-                     strcmp(_internal_remove_spaces(token), "PAPI_FP_OPS") == 0 ) )
-            {
-               token = strtok( NULL, separator );
-               continue;
+               short found = 0;
+               for ( i = 0; i < default_number; i++ ) {
+                  if ( strcmp(_internal_remove_spaces(token), default_events[i]) == 0 )
+                  {
+                     token = strtok( NULL, separator );
+                     found = 1;
+                     break;
+                  }
+               }
+               if ( found == 1 )
+                  continue;
             }
             if ( pc_list_len >= pc_array_len ){
                //more entries as in the first run
                return PAPI_EINVAL;
             }
-            //printf("TOKEN: %s\n", _internal_remove_spaces(token));
             event_names_from_env[ pc_list_len ] = _internal_remove_spaces(token);
-            //debug
-            //printf("#%s#\n", perf_counters[ pc_list_len ]);
             token = strtok( NULL, separator );
             pc_list_len++;
          }
       }
    }
 
-   //check availibilty of user events
+   //check availibilty of user counters
    if ( pc_list_len > 0 )
    {
       for ( i = 0; i < pc_list_len; i++ ) {
@@ -301,19 +300,25 @@ int _internal_hl_read_events()
          event_names[i] = default_events[i];
       event_number = default_number;
    }
-
    free(event_names_from_env);
+
+   //check if "perf::TASK-CLOCK" is already inlcuded in event set (if not, add it)
+   short found_task_clock = 0;
+   for ( i = 0; i < event_number; i++ ) {
+      if ( strcmp(event_names[i], "perf::TASK-CLOCK") == 0 )
+      {
+         found_task_clock = 1;
+         break;
+      }
+   }
+   if ( found_task_clock == 0 )
+   {
+      event_names[event_number] = "perf::TASK-CLOCK";
+      event_number++;
+   }
 
    //increase total event number for region counter and CPU cycles
    total_event_number = event_number + 2;
-
-   //generate array of all events including region count and CPU cycles for output
-   all_event_names = calloc( total_event_number, sizeof( char* ) );
-   all_event_names[0] = "REGION_COUNT";
-   all_event_names[1] = "CYCLES";
-   for ( i = 0; i < event_number; i++ ) {
-      all_event_names[i + 2] = event_names[i];
-   }
 
    events_determined = 1;
    return ( PAPI_OK );
@@ -474,8 +479,7 @@ void _internal_hl_write_output()
       unsigned long *tids = NULL;
       int i, j, number;
       FILE *output_file;
-      short output_file_generated = 0;
-      //current CPU frequency in Hz
+      //current CPU frequency in MHz
       int cpu_freq;
 
       //determine rank for output file
@@ -504,17 +508,26 @@ void _internal_hl_write_output()
          printf("Error: Cannot create output file %s!\n", output_file_path);
       }
       else
-         output_file_generated = 1;
-
-      if ( output_file_generated == 1 )
       {
+         //generate array of all events including region count and CPU cycles for output
+         all_event_names = calloc( total_event_number, sizeof( char* ) );
+         all_event_names[0] = "REGION_COUNT";
+         all_event_names[1] = "CYCLES";
+         for ( i = 0; i < event_number; i++ ) {
+            all_event_names[i + 2] = event_names[i];
+         }
+
          //list all threads
          PAPI_list_threads( tids, &number );
          tids=malloc( number * sizeof(unsigned long) );
          PAPI_list_threads( tids, &number );
 
-         // Thread,list<Region:list<Event:Value>>
-         // 1,<"calc_1":<"PAPI_TOT_INS":57258,"PAPI_TOT_CYC":39439>,"calc_2":<"PAPI_TOT_INS":57258,"PAPI_TOT_CYC":39439>>
+         /* example output
+          * CPU in MHz:1995
+          * Thread,list<Region:list<Event:Value>>
+          * 1,<"calc_1":<"PAPI_TOT_INS":57258,"PAPI_TOT_CYC":39439>,"calc_2":<"PAPI_TOT_INS":57258,"    
+            PAPI_TOT_CYC":39439>>
+          */
 
          //print current CPU frequency for each rank
          fprintf(output_file, "CPU in MHz:%d\n", cpu_freq);
