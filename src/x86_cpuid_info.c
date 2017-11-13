@@ -13,9 +13,9 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <ctype.h>
 #include "papi.h"
 #include "papi_internal.h"
-
 
 static void init_mem_hierarchy( PAPI_mh_info_t * mh_info );
 static int init_amd( PAPI_mh_info_t * mh_info, int *levels );
@@ -1447,7 +1447,7 @@ init_intel_leaf2( PAPI_mh_info_t * mh_info , int *num_levels)
 	MEMDBG( "Repeat cpuid(2,...) %d times. If not 1, code is broken.\n",
 			count );
 	if (count!=1) {
-	   fprintf(stderr,"Warning: Unhandled cpuid count of %d\n",count);
+	  PAPIWARN("Unhandled cpuid count of %d",count);
 	}
 
 	for ( r = 0; r < 4; r++ ) {	/* walk the registers */
@@ -1502,35 +1502,38 @@ init_intel( PAPI_mh_info_t * mh_info, int *levels )
 }
 
 
-/* Returns 1 if hypervisor detected */
+/* Returns 1 if hypervisor detected, and possibly a name */
 /* Returns 0 if none found.         */
 int 
 _x86_detect_hypervisor(char *vendor_name)
 {
-  unsigned int eax, ebx, ecx, edx;
-  char hyper_vendor_id[13];
+  unsigned int eax, ebx, ecx, edx, retval = 0;
+  char hyper_vendor_id[13], *tmp;
 
-  cpuid2(&eax, &ebx, &ecx, &edx,0x1,0);
-  /* This is the hypervisor bit, ecx bit 31 */
-  if  (ecx&0x80000000) {
-    /* There are various values in the 0x4000000X range */
-    /* It is questionable how standard they are         */
-    /* For now we just return the name.                 */
-    cpuid2(&eax, &ebx, &ecx, &edx, 0x40000000,0);
+  memset(hyper_vendor_id,0x0,sizeof(hyper_vendor_id));
+
+  /* This is the hypervisor bit, ecx bit 31. NOTE! VM's do not
+     have to set this bit! */
+  cpuid2(&eax, &ebx, &ecx, &edx, 0x1, 0);
+  if (ecx & 0x80000000) {
+    MEMDBG("VM bit found in leaf 0x1, eax 0x%x\n",eax);
+    strncpy(hyper_vendor_id,"unknown",sizeof(hyper_vendor_id));
+    retval = 1;
+  }
+
+  /* There may exist a VM name in the 0x40000000 leaf and beyond */
+  cpuid2(&eax, &ebx, &ecx, &edx, 0x40000000, 0);
+  tmp = (char *)&ebx;
+  if (isprint(*tmp)) {
+    MEMDBG("VM name found in leaf 0x40000000, eax 0x%x\n",eax);
+    /* We found something! */
     memcpy(hyper_vendor_id + 0, &ebx, 4);
     memcpy(hyper_vendor_id + 4, &ecx, 4);
     memcpy(hyper_vendor_id + 8, &edx, 4);
     hyper_vendor_id[12] = '\0';
-    strncpy(vendor_name,hyper_vendor_id,PAPI_MAX_STR_LEN);
-    return 1;
+    retval = 1;
   }
-  else {
-    strncpy(vendor_name,"none",PAPI_MAX_STR_LEN);
-  }
-  return 0;
+
+  strncpy(vendor_name,hyper_vendor_id,PAPI_MAX_STR_LEN);
+  return retval;
 }
-
-
-
-
-
