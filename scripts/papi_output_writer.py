@@ -176,7 +176,7 @@ def format_events(events):
   #FLOPS
   if 'PAPI_FP_OPS' in events:
     mflops = (float(events['PAPI_FP_OPS']) / 1000000) / rt
-    format_events['MFLOPS'] = float(format(mflops, '.2f'))
+    format_events['MFLOP/s'] = float(format(mflops, '.2f'))
     del events['PAPI_FP_OPS']
   
   #read the rest

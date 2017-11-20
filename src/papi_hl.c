@@ -285,7 +285,7 @@ int _internal_hl_read_events()
    if ( event_names_from_env != NULL )
    {
       //combine default and user events
-      event_names = calloc( pc_list_len + default_number, sizeof( char* ) );
+      event_names = calloc( pc_list_len + default_number + 1, sizeof( char* ) );
       for ( i = 0; i < default_number; i++ )
          event_names[i] = default_events[i];
       for ( i = default_number; i < pc_list_len + default_number; i++ )
@@ -295,7 +295,7 @@ int _internal_hl_read_events()
    else
    {
       //use only default events
-      event_names = calloc( default_number, sizeof( char* ) );
+      event_names = calloc( default_number + 1, sizeof( char* ) );
       for ( i = 0; i < default_number; i++ )
          event_names[i] = default_events[i];
       event_number = default_number;
