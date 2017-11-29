@@ -28,19 +28,24 @@
 #include <error.h>
 #include <time.h>
 
+#define MAXIMUM_DEFAULT_EVENTS 4
+#define MAXIMUM_USER_EVENTS 10
+
+//enum?
+#define DEFAULT_EVENT 0
+#define USER_EVENT 1
 
 /* high level papi functions*/
 
 /** \internal 
  * This is stored globally.
  */
-char **event_names = NULL;       /**< Array of event names for PAPI*/
-char **all_event_names = NULL;   /**< Array of all event names*/
-char default_events[3][32];      /**< Maximal number of default events*/
-int event_number = 0;            /**< Number of events provided by PAPI specified by user + defaults*/
-int total_event_number = 0;      /**< total events including specific metrics like real and proc time*/
-int generate_output = 0;         /**< Generate output file if value=1 */
-int events_determined = 0;       /**< Check if events are determined after initialization*/
+char event_names[MAXIMUM_DEFAULT_EVENTS + MAXIMUM_USER_EVENTS][32];  /**< Maximal number of events*/
+int event_number = 0;         /**< Number of events to be recorded*/
+int default_event_number = 0; /**< Number of default events*/
+
+int generate_output = 0;      /**< Generate output file if value=1 */
+int events_determined = 0;    /**< Check if events are determined after initialization*/
 
 typedef struct
 {
@@ -86,14 +91,20 @@ void _internal_onetime_library_init(void);
 static int _internal_checkCounter ( char* counter );
 void _internal_determine_rank();
 char *_internal_remove_spaces( char *str );
+void _internal_hl_event_no_availability_msg(const char* event_name, int flag);
+int _internal_hl_determine_default_events();
+int _internal_hl_read_user_events(char user_events[][32], int *user_event_number);
 int _internal_hl_read_events();
+
 void _internal_hl_add_values_to_list(events_t *node, long long *values,
                                      long long cycles, short offset );
 events_t* _internal_hl_new_list_node(const char *region);
 int _internal_hl_store_values_in_map( unsigned long tid, const char *region,
                                       long long *values, long long cycles, short offset);
+
 static void internal_mkdir(const char *dir);
 void _internal_hl_write_output();
+void _internal_hl_event_combination_fails_msg(const char*);
 
 void _internal_onetime_library_init(void)
 {
@@ -137,19 +148,19 @@ _internal_checkCounter ( char* counter )
    int retval;
 
    if ( ( retval = PAPI_create_eventset( &EventSet ) ) != PAPI_OK )
-   return ( retval );
+      return ( retval );
 
    if ( ( retval = PAPI_event_name_to_code( counter, &eventcode ) ) != PAPI_OK )
-   return ( retval );
+      return ( retval );
 
    if ( ( retval = PAPI_add_event (EventSet, eventcode) ) != PAPI_OK )
-   return ( retval );
+      return ( retval );
 
    if ( ( retval = PAPI_cleanup_eventset (EventSet) ) != PAPI_OK )
-   return ( retval );
+      return ( retval );
 
    if ( ( retval = PAPI_destroy_eventset (&EventSet) ) != PAPI_OK )
-   return ( retval );
+      return ( retval );
 
    return ( PAPI_OK );
 }
@@ -180,145 +191,151 @@ char *_internal_remove_spaces( char *str )
    return out;
 }
 
-int _internal_hl_read_events()
+void _internal_hl_event_no_availability_msg(const char* event_name, int flag)
 {
-   char *perf_counters_from_env = NULL; //content of environment variable PAPI_EVENTS
-   char **event_names_from_env = NULL;
+   if ( flag == DEFAULT_EVENT )
+      printf("PAPI-HL: Default event %s is not available on this machine!\n", event_name);
+   else
+      printf("PAPI-HL: User event %s is not available on this machine!\n", event_name);
+}
+
+int _internal_hl_determine_default_events()
+{
+   int i;
+   char default_events[MAXIMUM_DEFAULT_EVENTS][32];
+
+   strcpy(default_events[0], "perf::TASK-CLOCK");
+   strcpy(default_events[1], "PAPI_TOT_INS");
+   strcpy(default_events[2], "PAPI_TOT_CYC");
+   strcpy(default_events[3], "PAPI_FP_OPS");
+
+   if ( event_number != 0 )
+   {
+      printf("PAPI-HL: Internal error! Default Values can only be set at the beginning.\n");
+      exit(EXIT_FAILURE);
+   }
+
+   //check if default events are available on the current machine
+   for ( i = 0; i < MAXIMUM_DEFAULT_EVENTS; i++ )
+   {
+      if ( _internal_checkCounter( default_events[i] ) == PAPI_OK )
+         strcpy(event_names[event_number++], default_events[i]);
+      else
+         _internal_hl_event_no_availability_msg(default_events[i], DEFAULT_EVENT);
+   }
+   default_event_number = event_number;
+   return ( PAPI_OK );
+}
+
+int _internal_hl_read_user_events(char user_events[][32], int *user_event_number)
+{
+   char *user_events_from_env = NULL; //content of environment variable PAPI_EVENTS
    const char *separator; //separator for events
    int pc_array_len = 1;
-   int pc_list_len = 0; //number of counter names in string
+   int pc_list_len = 0; //number of events names in string
    const char *position = NULL; //current position in processed string
    char *token;
-   int default_number = 0; // number of default PAPI counters
+   int i;
+
+   //get value from environment variable PAPI_EVENTS
+   user_events_from_env = strdup( getenv("PAPI_EVENTS") );
+   
+   //check if environment variable is not empty
+   if ( strlen( user_events_from_env ) > 0 )
+   {
+      //count number of separator characters
+      position = user_events_from_env;
+      separator=",";
+      while ( *position ) {
+         if ( strchr( separator, *position ) ) {
+            pc_array_len++;
+         }
+            position++;
+      }
+      //check if number of user events does not exceed maximum number of events
+      if ( pc_array_len > MAXIMUM_USER_EVENTS )
+      {
+         printf("PAPI-HL: Maximum number %d of events exceeded! Please reduce number of user events!\n", MAXIMUM_USER_EVENTS);
+         exit(EXIT_FAILURE);
+      }
+
+      //parse list of event names
+      token = strtok( user_events_from_env, separator );
+      while ( token ) {
+
+         //check if user declared default events (if so, skip them)
+         if ( event_number > 0 ) 
+         {
+            short found = 0;
+            for ( i = 0; i < event_number; i++ ) {
+               if ( strcmp(_internal_remove_spaces(token), event_names[i]) == 0 )
+               {
+                  token = strtok( NULL, separator );
+                  found = 1;
+                  break;
+               }
+            }
+            if ( found == 1 )
+               continue;
+         }
+         if ( pc_list_len >= pc_array_len ){
+            //more entries as in the first run
+            return PAPI_EINVAL;
+         }
+         strcpy(user_events[ pc_list_len ], _internal_remove_spaces(token));
+         token = strtok( NULL, separator );
+         pc_list_len++;
+      }
+      *user_event_number = pc_list_len;
+   }
+   return ( PAPI_OK );
+}
+
+int _internal_hl_read_events()
+{
+
+   char user_events[MAXIMUM_USER_EVENTS][32];
+   int user_event_number = 0;
    int i;
    char *default_option = NULL;
    int no_default = 0;
 
-   //check if default counters is disabled
-   if ( getenv("PAPI_DEFAULT_NONE") != NULL ) {
+   //check if default events are disabled
+   if ( getenv("PAPI_DEFAULT_NONE") != NULL )
+   {
       default_option = strdup( getenv("PAPI_DEFAULT_NONE") );
       const char *possible_default_options = "YES,yes,true,TRUE,1";
       if ( strstr(possible_default_options, default_option) != NULL )
          no_default = 1;
-      else
-         no_default = 0; 
    }
 
-   //set default counters
+   //set default events
    if ( no_default == 0 )
    {
-      strcpy(default_events[0], "PAPI_TOT_INS");
-      strcpy(default_events[1], "PAPI_TOT_CYC");
-      default_number = 2;
-
-      //check for FLOPS
-      if ( _internal_checkCounter( "PAPI_FP_OPS" ) == PAPI_OK )
-      {
-         strcpy(default_events[2], "PAPI_FP_OPS");
-         default_number = 3;
-      } else
-         printf("PAPI: Default counter PAPI_FP_OPS not available on this machine!\n");
+      _internal_hl_determine_default_events();
    }
 
-   //check if user wants to add additional counters
-   if ( getenv("PAPI_EVENTS") != NULL ) {
-
-      separator=",";
-      //get value from environment variable PAPI_EVENTS
-      perf_counters_from_env = strdup( getenv("PAPI_EVENTS") );
-      
-      //check if environment variable is not empty
-      if ( strlen( perf_counters_from_env ) > 0 ) {
-         //count number of separator characters
-         position = perf_counters_from_env;
-         while ( *position ) {
-            if ( strchr( separator, *position ) ) {
-               pc_array_len++;
-            }
-               position++;
-         }
-         //allocate memory for event array
-         event_names_from_env = calloc( pc_array_len, sizeof( char* ) );
-
-         //parse list of counter names
-         token = strtok( perf_counters_from_env, separator );
-         while ( token ) {
-
-            //check if user declared default counters (if so, skip them)
-            if ( no_default == 0 ) 
-            {
-               short found = 0;
-               for ( i = 0; i < default_number; i++ ) {
-                  if ( strcmp(_internal_remove_spaces(token), default_events[i]) == 0 )
-                  {
-                     token = strtok( NULL, separator );
-                     found = 1;
-                     break;
-                  }
-               }
-               if ( found == 1 )
-                  continue;
-            }
-            if ( pc_list_len >= pc_array_len ){
-               //more entries as in the first run
-               return PAPI_EINVAL;
-            }
-            event_names_from_env[ pc_list_len ] = _internal_remove_spaces(token);
-            token = strtok( NULL, separator );
-            pc_list_len++;
-         }
-      }
-   }
-
-   //check availibilty of user counters
-   if ( pc_list_len > 0 )
+   //check if user wants to add additional events
+   if ( getenv("PAPI_EVENTS") != NULL )
    {
-      for ( i = 0; i < pc_list_len; i++ ) {
-         if ( _internal_checkCounter( event_names_from_env[i] ) != PAPI_OK ) {
-            printf("PAPI Error: Counter %s not available on this machine!\n", event_names_from_env[i]);
+      _internal_hl_read_user_events(user_events, &user_event_number);
+      for ( i = 0; i < user_event_number; i++ )
+      {
+         //check availibilty of user events
+         if ( _internal_checkCounter( user_events[i] ) == PAPI_OK )
+            strcpy(event_names[event_number++], user_events[i]);
+         else
+         {
+            _internal_hl_event_no_availability_msg(user_events[i], USER_EVENT);
             exit(EXIT_FAILURE);
          }
       }
    }
 
-   //generate final event set
-   if ( event_names_from_env != NULL )
-   {
-      //combine default and user events
-      event_names = calloc( pc_list_len + default_number + 1, sizeof( char* ) );
-      for ( i = 0; i < default_number; i++ )
-         event_names[i] = default_events[i];
-      for ( i = default_number; i < pc_list_len + default_number; i++ )
-         event_names[i] = event_names_from_env[i - default_number];
-      event_number = pc_list_len + default_number;
-   }
-   else
-   {
-      //use only default events
-      event_names = calloc( default_number + 1, sizeof( char* ) );
-      for ( i = 0; i < default_number; i++ )
-         event_names[i] = default_events[i];
-      event_number = default_number;
-   }
-   free(event_names_from_env);
-
-   //check if "perf::TASK-CLOCK" is already inlcuded in event set (if not, add it)
-   short found_task_clock = 0;
-   for ( i = 0; i < event_number; i++ ) {
-      if ( strcmp(event_names[i], "perf::TASK-CLOCK") == 0 )
-      {
-         found_task_clock = 1;
-         break;
-      }
-   }
-   if ( found_task_clock == 0 )
-   {
-      event_names[event_number] = "perf::TASK-CLOCK";
-      event_number++;
-   }
-
-   //increase total event number for region counter and CPU cycles
-   total_event_number = event_number + 2;
+   //WORKAROUND:
+   //if no event is set, use "perf::TASK-CLOCK"
+   if ( event_number == 0 )
+      strcpy(event_names[event_number++], "perf::TASK-CLOCK");
 
    events_determined = 1;
    return ( PAPI_OK );
@@ -350,6 +367,10 @@ events_t* _internal_hl_new_list_node(const char *region )
 {
    events_t *new_node;
    int i;
+   int total_event_number;
+
+   //number of all events including region count and CPU cycles
+   total_event_number = event_number + 2;
    new_node = malloc(sizeof(events_t) + total_event_number * sizeof(value_t));
    new_node->region = (char *)malloc((strlen(region) + 1) * sizeof(char));
    strcpy(new_node->region, region);
@@ -476,6 +497,8 @@ void _internal_hl_write_output()
 
    if ( generate_output == 1 )
    {
+      char **all_event_names = NULL;
+      int total_event_number;
       unsigned long *tids = NULL;
       int i, j, number;
       FILE *output_file;
@@ -510,6 +533,7 @@ void _internal_hl_write_output()
       else
       {
          //generate array of all events including region count and CPU cycles for output
+         total_event_number = event_number + 2;
          all_event_names = calloc( total_event_number, sizeof( char* ) );
          all_event_names[0] = "REGION_COUNT";
          all_event_names[1] = "CYCLES";
@@ -565,9 +589,27 @@ void _internal_hl_write_output()
             }
          }
          fprintf(output_file, "\n");
+         free(all_event_names);
          fclose(output_file);
       }
    }
+}
+
+void _internal_hl_event_combination_fails_msg(const char* event_name)
+{
+   int i;
+   printf("PAPI-HL: The following event combination does not work on this machine.\n\n");
+   for ( i = 0; i < event_number; i++ )
+   {
+      if ( i < default_event_number )
+         printf("%s (Default)\n", event_names[i]);
+      else
+         printf("%s\n", event_names[i]);
+   }
+   printf("\n\nPlease try the following:\n");
+   printf("- Remove %s from your event list or\n", event_name);
+   printf("- Disable default events (PAPI_DEFAULT_NONE=yes) or\n"); 
+   printf("- Use papi_event_chooser to obtain an appropriate event list\n\n");
 }
 
 int
@@ -603,20 +645,23 @@ PAPI_region_begin( const char* region )
             return ( retval );
          }
          retval = PAPI_add_event( _EventSet, event );
-         if ( retval == PAPI_EISRUN )
-            return ( retval );
+         if ( retval != PAPI_OK ) {
+            _internal_hl_event_combination_fails_msg(event_names[i]);
+            exit(EXIT_FAILURE);
+         }
       }
 
       //allocate memory for values based on EventSet
       _values = calloc(event_number, sizeof(long long));
 
       if ( ( retval = PAPI_start( _EventSet ) ) != PAPI_OK ) {
-         return ( retval );
+         _internal_hl_event_combination_fails_msg(event_names[i]);
+         exit(EXIT_FAILURE);
       }
 
       //warm up PAPI code paths and data structures
       if ( PAPI_read_ts( _EventSet, _values, &cycles ) != PAPI_OK ) {
-         printf("PAPI: Your counter combination does not work on this machine!\n");
+         _internal_hl_event_combination_fails_msg(event_names[i]);
          exit(EXIT_FAILURE);
       }
    }
