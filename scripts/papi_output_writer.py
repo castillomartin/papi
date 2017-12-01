@@ -159,7 +159,10 @@ def format_events(events):
   #Real Time
   if 'CYCLES' in events:
     #TODO: read cpu frequency from json file
-    rt = float(events['CYCLES']) / int(cpu_freq)
+    try:
+      rt = float(events['CYCLES']) / int(cpu_freq)
+    except:
+      rt = 0.0
     format_events['Real time in s'] = float(format(rt, '.2f'))
     del events['CYCLES']
   #CPU Time
@@ -169,13 +172,19 @@ def format_events(events):
     del events['perf::TASK-CLOCK']
   #PAPI_TOT_INS and PAPI_TOT_CYC to calculate IPC
   if 'PAPI_TOT_INS' and 'PAPI_TOT_CYC' in events:
-    ipc = float( int(events['PAPI_TOT_INS']) / int(events['PAPI_TOT_CYC']) )
+    try:
+      ipc = float( int(events['PAPI_TOT_INS']) / int(events['PAPI_TOT_CYC']) )
+    except:
+      ipc = 0.0
     format_events['IPC'] = float(format(ipc, '.2f'))
     del events['PAPI_TOT_INS']
     del events['PAPI_TOT_CYC']
   #FLOPS
   if 'PAPI_FP_OPS' in events:
-    mflops = (float(events['PAPI_FP_OPS']) / 1000000) / rt
+    try:
+      mflops = (float(events['PAPI_FP_OPS']) / 1000000) / rt
+    except:
+      mflops = 0.0
     format_events['MFLOP/s'] = float(format(mflops, '.2f'))
     del events['PAPI_FP_OPS']
   
