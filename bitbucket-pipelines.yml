@@ -11,5 +11,7 @@ pipelines:
         script: # Modify the commands below to build your repository.
           - cd src
           - ./configure
+          - make -k
+          - cd ../papi-hl
           - make
 #          - make fulltest
