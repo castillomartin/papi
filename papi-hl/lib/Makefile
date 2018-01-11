@@ -52,7 +52,7 @@ endif
 OBJS=$(SRCS:.c=.o)
 SOBJS=$(OBJS:.o=.lo)
 
-INC_COMMON= $(PAPIHLINCDIR)/papi_hl.h papi_hl_priv.h
+INC_COMMON= $(PAPIHLINCDIR)/papihl.h papi_hl_priv.h
 
 INCDEP=$(INC_COMMON) $(INCARCH)
 
