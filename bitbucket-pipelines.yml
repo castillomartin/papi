@@ -10,8 +10,8 @@ pipelines:
     - step:
         script: # Modify the commands below to build your repository.
           - cd src
-          - ./configure
-          - make -k
+          - ./configure --with-pthread-mutexes
+          - make
           - cd ../papi-hl
           - make
 #          - make fulltest
